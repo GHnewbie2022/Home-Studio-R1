@@ -1,3 +1,13 @@
+// R2-1 房間邊界常數
+// 座標系統：X=東西向(負=西，正=東), Y=高度向(負=下，正=上), Z=南北向(負=北，正=南)
+// (0,0,0) = 聆聽點底下的地板
+const MIN_X = -2.11;
+const MAX_X = 2.11;
+const MIN_Y = -0.20;
+const MAX_Y = 3.105;
+const MIN_Z = -2.074;
+const MAX_Z = 3.256;
+
 let samplesPerFrame = 8.0;
 let samplesPerFrameController;
 
