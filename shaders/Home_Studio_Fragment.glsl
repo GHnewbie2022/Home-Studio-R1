@@ -5,7 +5,7 @@ precision highp sampler2D;
 #include <pathtracing_uniforms_and_defines>
 
 #define N_QUADS 1
-#define N_BOXES 1
+#define N_BOXES 16
 
 vec3 rayOrigin, rayDirection;
 vec3 hitNormal, hitEmission, hitColor;
@@ -51,17 +51,20 @@ float SceneIntersect( )
 	}
 	objectCount++;
 	
-	d = BoxInteriorIntersect( boxes[0].minCorner, boxes[0].maxCorner, rayOrigin, rayDirection, n );
-	if (d < t && n != vec3(0,0,0))
-	{
-		t = d;
-		hitNormal = n;
-		hitEmission = boxes[0].emission;
-		hitColor = boxes[0].color;
-		hitType = boxes[0].type;
-		hitObjectID = float(objectCount);
+	int isRayExiting = FALSE;
+	for (int i = 0; i < N_BOXES; i++) {
+		d = BoxIntersect( boxes[i].minCorner, boxes[i].maxCorner, rayOrigin, rayDirection, n, isRayExiting );
+		if (d < t && n != vec3(0,0,0))
+		{
+			t = d;
+			hitNormal = n;
+			hitEmission = boxes[i].emission;
+			hitColor = boxes[i].color;
+			hitType = boxes[i].type;
+			hitObjectID = float(objectCount);
+		}
+		objectCount++;
 	}
-	objectCount++;
 
 	return t;
 }
@@ -230,18 +233,38 @@ void SetupScene(void)
 	float MIN_Z = -2.074;
 	float MAX_Z = 3.256;
 	
-	vec3 floorColor = vec3(0.55, 0.47, 0.41);
-	vec3 wallColor = vec3(0.95, 0.93, 0.90);
+	vec3 C_FLOOR = vec3(0.55, 0.47, 0.41);
+	vec3 C_WALL = vec3(1.0, 0.984, 0.949);
+	vec3 C_WALL_L = vec3(1.0, 0.984, 0.949);
+	vec3 C_WALL_R = vec3(1.0, 0.984, 0.949);
+	vec3 C_WALL_S = vec3(1.0, 0.984, 0.949);
+	vec3 C_BEAM = vec3(1.0, 0.984, 0.949);
+	
 	vec3 L1 = vec3(1.0, 0.95, 0.8) * 8.0;
-	
-	quads[0] = Quad( vec3(0.0, -1.0, 0.0), 
-	                 vec3(-0.5, 2.90, -0.5), 
-	                 vec3(0.5, 2.90, -0.5), 
-	                 vec3(0.5, 2.90, 0.5), 
-	                 vec3(-0.5, 2.90, 0.5), 
+
+	quads[0] = Quad( vec3(0.0, -1.0, 0.0),
+	                 vec3(-0.5, 2.90, -0.5),
+	                 vec3(0.5, 2.90, -0.5),
+	                 vec3(0.5, 2.90, 0.5),
+	                 vec3(-0.5, 2.90, 0.5),
 	                 L1, z, LIGHT);
-	
-	boxes[0] = Box( vec3(MIN_X, MIN_Y, MIN_Z), vec3(MAX_X, MAX_Y, MAX_Z), z, wallColor, DIFF);
+
+	boxes[0] = Box( vec3(MIN_X, MIN_Y, MIN_Z), vec3(MAX_X, 0.0, MAX_Z), z, C_FLOOR, DIFF);
+	boxes[1] = Box( vec3(MIN_X, 2.905, MIN_Z), vec3(MAX_X, MAX_Y, MAX_Z), z, C_WALL, DIFF);
+	boxes[2] = Box( vec3(MIN_X, 0.0, MIN_Z), vec3(-1.52, 2.905, -1.874), z, C_WALL, DIFF);
+	boxes[3] = Box( vec3(-0.73, 0.0, MIN_Z), vec3(MAX_X, 2.905, -1.874), z, C_WALL, DIFF);
+	boxes[4] = Box( vec3(-1.52, 2.03, MIN_Z), vec3(-0.73, 2.905, -1.874), z, C_WALL, DIFF);
+	boxes[5] = Box( vec3(1.91, 0.0, MIN_Z), vec3(MAX_X, 2.905, MAX_Z), z, C_WALL_R, DIFF);
+	boxes[6] = Box( vec3(MIN_X, 0.0, 3.056), vec3(-1.75, 2.905, MAX_Z), z, C_WALL_S, DIFF);
+	boxes[7] = Box( vec3(0.69, 0.0, 3.056), vec3(MAX_X, 2.905, MAX_Z), z, C_WALL_S, DIFF);
+	boxes[8] = Box( vec3(-1.75, 0.0, 3.056), vec3(0.69, 1.04, MAX_Z), z, C_WALL_S, DIFF);
+	boxes[9] = Box( vec3(MIN_X, 2.04, -1.874), vec3(-1.91, 2.905, -0.984), z, C_WALL_L, DIFF);
+	boxes[10] = Box( vec3(MIN_X, 0.0, -1.874), vec3(-1.91, 0.09, -0.984), z, C_WALL_L, DIFF);
+	boxes[11] = Box( vec3(MIN_X, 0.0, -0.984), vec3(-1.91, 2.905, MAX_Z), z, C_WALL_L, DIFF);
+	boxes[12] = Box( vec3(-1.91, 2.525, MIN_Z), vec3(-1.75, 2.905, MAX_Z), z, C_BEAM, DIFF);
+	boxes[13] = Box( vec3(1.85, 2.515, MIN_Z), vec3(MAX_X, 2.905, 2.49), z, C_BEAM, DIFF);
+	boxes[14] = Box( vec3(-1.91, 0.0, 2.848), vec3(-1.75, 2.905, MAX_Z), z, C_BEAM, DIFF);
+	boxes[15] = Box( vec3(1.78, 0.0, 2.49), vec3(MAX_X, 2.905, MAX_Z), z, C_BEAM, DIFF);
 }
 
 

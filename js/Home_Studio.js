@@ -178,11 +178,11 @@ function switchCamera(preset) {
 }
 
 function initSceneData() {
-    demoFragmentShaderFileName = 'Home_Studio_Fragment.glsl';
+    demoFragmentShaderFileName = 'Home_Studio_Fragment.glsl?v=' + Date.now();
     
     sceneIsDynamic = false;
     cameraFlightSpeed = 10;
-    pixelRatio = mouseControl ? 2.0 : 2.0;
+    pixelRatio = mouseControl ? 1.0 : 1.0;
     EPS_intersect = 0.001;
     
     worldCamera.fov = 55;
