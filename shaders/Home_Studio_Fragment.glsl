@@ -8,10 +8,16 @@ precision highp sampler2D;
 uniform sampler2D tBVHTexture;
 uniform sampler2D tBoxDataTexture;
 
+// Window backdrop texture
+uniform sampler2D uWinTex;
+
+#define BACKDROP 5
+
 #define N_QUADS 1
 
 vec3 rayOrigin, rayDirection;
 vec3 hitNormal, hitEmission, hitColor;
+vec3 hitBoxMin, hitBoxMax;
 vec2 hitUV;
 float hitObjectID;
 int hitType = -100;
@@ -123,6 +129,8 @@ float SceneIntersect( )
 				hitEmission = boxEmission;
 				hitColor = boxColor;
 				hitType = boxType;
+				hitBoxMin = boxMin;
+				hitBoxMax = boxMax;
 				hitObjectID = float(objectCount + boxIdx);
 			}
 		} else {
@@ -247,6 +255,20 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 			break;
 		}
 
+		if (hitType == BACKDROP)
+		{
+			// 只渲染面向室內的 -Z 面
+			if (hitNormal.z < -0.5)
+			{
+				vec3 hitPoint = rayOrigin + rayDirection * t;
+				vec3 center = (hitBoxMin + hitBoxMax) * 0.5;
+				vec3 half_s = (hitBoxMax - hitBoxMin) * 0.5;
+				vec3 localPos = hitPoint - center;
+				vec2 uv = vec2(-localPos.x / half_s.x * 0.5 + 0.5, localPos.y / half_s.y * 0.5 + 0.5);
+				accumCol = mask * pow(texture(uWinTex, uv).rgb, vec3(2.2));
+			}
+			break;
+		}
 
     if (hitType == DIFF)
     {

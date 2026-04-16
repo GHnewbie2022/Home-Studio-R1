@@ -64,15 +64,21 @@ addBox([-1.91, 0.160, 2.385], [-1.035, 0.3125, 3.056], z3, C_WOOD, 1);        //
 addBox([-1.91, 0.3175, 2.385], [-1.035, 0.470, 3.056], z3, C_WOOD, 1);        // 23 第3格
 addBox([-1.91, 0.475, 2.385], [-1.035, 0.6275, 3.056], z3, C_WOOD, 1);        // 24 頂格
 
+// R2-5 門 + 窗外景色 (index 25-27)
+addBox([-1.52, 0.0, -1.914], [-0.73, 2.03, -1.874], z3, C_WOOD, 1);          // 25 北牆木門
+addBox([-2.00, 0.09, -1.874], [-1.96, 2.04, -0.984], z3, C_METAL, 1);        // 26 西牆鐵門
+addBox([-15.0, -5.0, 14.9], [15.0, 10.0, 15.0], z3, C_WHITE, 5);              // 27 窗外景色背板（type 5: 貼圖採樣）
+
 let samplesPerFrame = 8.0;
 let samplesPerFrameController;
 
 const CAMERA_PRESETS = {
-    cam1: { position: { x: 0.0, y: 1.5, z: 2.5 }, pitch: -0.15, yaw: 0.0 },
-    cam2: { position: { x: -0.9, y: 1.1, z: 3.7 }, pitch: 0.3, yaw: -0.25 },
+    cam1: { position: { x: -1.4, y: 2.3, z: 3.9 }, pitch: -0.18, yaw: -0.40 },
+    cam2: { position: { x: -0.9, y: 1.5, z: 3.4 }, pitch: 0.3, yaw: -0.25 },
     cam3: { position: { x: 0.0, y: 1.3, z: -1.0 }, pitch: 0.0, yaw: -Math.PI }
 };
 let currentCameraPreset = 'cam1';
+let camPosXCtrl, camPosYCtrl, camPosZCtrl, camPitchCtrl, camYawCtrl;
 
 let basicBrightness = 800.0;
 let colorTemperature = 4000;
@@ -229,15 +235,29 @@ function switchCamera(preset) {
     inputMovementHorizontal = 0;
     inputMovementVertical = 0;
 
+    // 重置 FOV（滾輪縮放）
+    worldCamera.fov = 55;
+    fovScale = worldCamera.fov * 0.5 * (Math.PI / 180.0);
+    pathTracingUniforms.uVLen.value = Math.tan(fovScale);
+
     isPaused = true;
     cameraIsMoving = true;
+
+    // 同步 GUI 顯示
+    if (camPosXCtrl) {
+        camPosXCtrl.setValue(cam.position.x);
+        camPosYCtrl.setValue(cam.position.y);
+        camPosZCtrl.setValue(cam.position.z);
+        camPitchCtrl.setValue(cam.pitch);
+        camYawCtrl.setValue(cam.yaw);
+    }
 }
 
 function initSceneData() {
     demoFragmentShaderFileName = 'Home_Studio_Fragment.glsl?v=' + Date.now();
     
     sceneIsDynamic = false;
-    cameraFlightSpeed = 10;
+    cameraFlightSpeed = 5;
     pixelRatio = mouseControl ? 1.0 : 1.0;
     EPS_intersect = 0.001;
     
@@ -245,8 +265,14 @@ function initSceneData() {
     focusDistance = 4.0;
     apertureChangeSpeed = 200;
     
-    cameraControlsObject.position.set(0.0, 1.5, 2.5);
-    cameraControlsPitchObject.rotation.x = -0.15;
+    // 預設載入 Cam 1 位置
+    cameraControlsObject.position.set(-1.4, 2.3, 3.9);
+    cameraControlsPitchObject.rotation.set(-0.18, 0, 0);
+    cameraControlsYawObject.rotation.set(0, -0.40, 0);
+    inputRotationHorizontal = -0.40;
+    inputRotationVertical = -0.18;
+    oldYawRotation = -0.40;
+    oldPitchRotation = -0.18;
     
     var keys = {};
     window.addEventListener('keydown', function(e) { keys[e.code] = true; });
@@ -337,6 +363,19 @@ function initSceneData() {
     pathTracingUniforms.tBVHTexture = { value: bvhDataTexture };
     pathTracingUniforms.tBoxDataTexture = { value: boxDataTexture };
 
+    // 6) 載入窗外景色貼圖
+    const winTexLoader = new THREE.TextureLoader();
+    winTexLoader.crossOrigin = 'anonymous';
+    winTexLoader.load('https://duk.tw/WfvcAv.png', function(tex) {
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.flipY = true;
+        pathTracingUniforms.uWinTex = { value: tex };
+        cameraIsMoving = true;
+    });
+    // 預設 1x1 白色貼圖，貼圖載入前不會黑屏
+    pathTracingUniforms.uWinTex = { value: new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1, THREE.RGBAFormat) };
+
     if (mouseControl) {
         setupGUI();
     }
@@ -358,6 +397,37 @@ function setupGUI() {
     cameraFolder.add(camActions, 'cam1').name('Cam 1');
     cameraFolder.add(camActions, 'cam2').name('Cam 2');
     cameraFolder.add(camActions, 'cam3').name('Cam 3');
+
+    var camPos = {
+        x: cameraControlsObject.position.x,
+        y: cameraControlsObject.position.y,
+        z: cameraControlsObject.position.z,
+        pitch: cameraControlsPitchObject.rotation.x,
+        yaw: cameraControlsYawObject.rotation.y
+    };
+
+    function applyCamManual() {
+        lockedPreset = null;
+        cameraControlsObject.position.set(camPos.x, camPos.y, camPos.z);
+        cameraControlsPitchObject.rotation.set(camPos.pitch, 0, 0);
+        cameraControlsYawObject.rotation.set(0, camPos.yaw, 0);
+        inputRotationHorizontal = camPos.yaw;
+        inputRotationVertical = camPos.pitch;
+        oldYawRotation = camPos.yaw;
+        oldPitchRotation = camPos.pitch;
+        inputMovementHorizontal = 0;
+        inputMovementVertical = 0;
+        isPaused = true;
+        cameraIsMoving = true;
+        cameraSwitchFrames = 3;
+    }
+
+    camPosXCtrl = cameraFolder.add(camPos, 'x', -3, 3, 0.01).name('pos X').onChange(applyCamManual);
+    camPosYCtrl = cameraFolder.add(camPos, 'y', 0, 4, 0.01).name('pos Y').onChange(applyCamManual);
+    camPosZCtrl = cameraFolder.add(camPos, 'z', -3, 5, 0.01).name('pos Z').onChange(applyCamManual);
+    camPitchCtrl = cameraFolder.add(camPos, 'pitch', -1.5, 1.5, 0.01).name('pitch').onChange(applyCamManual);
+    camYawCtrl = cameraFolder.add(camPos, 'yaw', -Math.PI, Math.PI, 0.01).name('yaw').onChange(applyCamManual);
+
     cameraFolder.open();
 
     // Prevent GUI clicks from bubbling to body's pointer lock handler
@@ -462,6 +532,20 @@ function updateVariablesAndUniforms() {
         pathTracingUniforms.uWallAlbedo.value = wallAlbedo;
     }
     
+    // 每幀同步攝影機實際值到 GUI（updateDisplay 不觸發 onChange）
+    if (camPosXCtrl) {
+        camPosXCtrl.object.x = cameraControlsObject.position.x;
+        camPosYCtrl.object.y = cameraControlsObject.position.y;
+        camPosZCtrl.object.z = cameraControlsObject.position.z;
+        camPitchCtrl.object.pitch = cameraControlsPitchObject.rotation.x;
+        camYawCtrl.object.yaw = cameraControlsYawObject.rotation.y;
+        camPosXCtrl.updateDisplay();
+        camPosYCtrl.updateDisplay();
+        camPosZCtrl.updateDisplay();
+        camPitchCtrl.updateDisplay();
+        camYawCtrl.updateDisplay();
+    }
+
     cameraInfoElement.innerHTML = "FOV: " + worldCamera.fov + " / Aperture: " + apertureSize.toFixed(2) + " / FocusDistance: " + focusDistance + "<br>" + "Samples: " + sampleCounter + " / SPF: " + samplesPerFrame;
     
     if (sampleCounter < lastSnapshotCheck) {
