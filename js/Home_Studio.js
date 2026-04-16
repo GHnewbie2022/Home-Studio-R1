@@ -9,28 +9,28 @@ const MIN_Z = -2.074;
 const MAX_Z = 3.256;
 
 // R2-2 顏色常量
-const C_WALL         = [1.0, 0.984, 0.949];
-const C_WALL_L       = [1.0, 0.984, 0.949];
-const C_WALL_R       = [1.0, 0.984, 0.949];
-const C_WALL_S       = [1.0, 0.984, 0.949];
-const C_BEAM         = [1.0, 0.984, 0.949];
-const C_FLOOR        = [0.55, 0.47, 0.41];
-const C_WOOD         = [0.55, 0.35, 0.17];
-const C_DARK_WOOD    = [0.36, 0.26, 0.18];
-const C_METAL        = [0.50, 0.55, 0.55];
-const C_WHITE        = [0.85, 0.85, 0.85];
-const C_SPEAKER      = [0.12, 0.12, 0.12];
-const C_STAND        = [0.08, 0.08, 0.08];
+const C_WALL = [1.0, 0.984, 0.949];
+const C_WALL_L = [1.0, 0.984, 0.949];
+const C_WALL_R = [1.0, 0.984, 0.949];
+const C_WALL_S = [1.0, 0.984, 0.949];
+const C_BEAM = [1.0, 0.984, 0.949];
+const C_FLOOR = [0.55, 0.47, 0.41];
+const C_WOOD = [0.55, 0.35, 0.17];
+const C_DARK_WOOD = [0.36, 0.26, 0.18];
+const C_METAL = [0.50, 0.55, 0.55];
+const C_WHITE = [0.85, 0.85, 0.85];
+const C_SPEAKER = [0.12, 0.12, 0.12];
+const C_STAND = [0.08, 0.08, 0.08];
 const C_STAND_PILLAR = [0.80, 0.82, 0.85];
-const C_SPIKE        = [0.75, 0.60, 0.15];
-const C_GIK          = [0.50, 0.50, 0.50];
-const C_DARK_VENT    = [0.13, 0.13, 0.13];
+const C_SPIKE = [0.75, 0.60, 0.15];
+const C_GIK = [0.50, 0.50, 0.50];
+const C_DARK_VENT = [0.0, 0.0, 0.0];
 
 // === Scene Box Data (single source of truth) ===
 const sceneBoxes = [];
 const z3 = [0, 0, 0]; // zero emission shorthand
-function addBox(min, max, emission, color, type) {
-    sceneBoxes.push({ min, max, emission, color, type });
+function addBox(min, max, emission, color, type, meta) {
+    sceneBoxes.push({ min, max, emission, color, type, meta: meta || 0 });
 }
 
 // R2-3 牆面 (index 0-15)
@@ -72,26 +72,151 @@ addBox([-15.0, -5.0, 14.9], [15.0, 10.0, 15.0], z3, C_WHITE, 5);              //
 // R2-7 KH750 超低音 (index 28)
 addBox([0.79, 0.0, 2.273], [1.12, 0.383, 2.656], z3, C_SPEAKER, 9);          // 28 KH750 超低音（type 9: 正背面貼圖，33×38.3×38.3cm）
 
+// R2-15 插座面板 (index 29-34, type 11 = OUTLET)
+addBox([-0.39, 1.185, -1.874], [-0.27, 1.255, -1.864], z3, C_WHITE, 11);  // 29 北牆插座，距地約 120cm
+addBox([-1.91, 0.325, -0.024], [-1.90, 0.395, 0.096], z3, C_WHITE, 11);   // 30 西牆插座 1，距地約 33cm
+addBox([-1.91, 0.585, 0.656], [-1.90, 0.655, 0.776], z3, C_WHITE, 11);    // 31 西牆插座 2，距地約 59cm
+addBox([1.90, 0.725, -0.354], [1.91, 0.795, -0.234], z3, C_WHITE, 11);    // 32 東牆插座 1，距地約 73cm
+addBox([1.90, 0.740, 1.930], [1.91, 0.810, 2.050], z3, C_WHITE, 11);      // 33 東牆插座 2，距地約 74cm
+addBox([1.01, 0.355, 2.906], [1.02, 0.475, 3.026], z3, C_WHITE, 11);      // 34 南牆附近插座，距地約 36cm
+
+// R2-13 冷氣與通風口 (index 35-36)
+addBox([0.83, 2.425, 2.681], [1.7, 2.725, 3.181], z3, C_WHITE, 1);      // 35 冷氣主體
+addBox([0.91, 2.425, 2.681], [1.62, 2.455, 2.9], z3, C_DARK_VENT, 1);  // 36 冷氣出風口
+
+// R2-8 吸音板
+const BASE_BOX_COUNT = 37; // index 0-36 為基礎場景（牆面+傢俱+門+窗+KH750+插座+冷氣）
+
+// Config 1：3 片灰色（第一反射點）
+const panelConfig1 = [
+    { min: [1.792, 0.655, 0.198], max: [1.91, 1.855, 0.798], color: C_GIK, meta: 0 },     // E2 東牆
+    { min: [-1.91, 0.655, 0.198], max: [-1.792, 1.855, 0.798], color: C_GIK, meta: 0 },    // W2 西牆
+    { min: [-0.27, 0.655, -1.874], max: [0.33, 1.855, -1.756], color: C_GIK, meta: 0 },      // N_v 北牆垂直（Y 統一與側牆齊高，X 東移避開插座）
+];
+
+// Config 2：9 片（北 3 灰水平 + 東 3 白 + 西 3 白）
+const panelConfig2 = [
+    { min: [-0.6, 0.585, -1.874], max: [0.6, 1.185, -1.756], color: C_GIK, meta: 0 },      // N1 下層
+    { min: [-0.6, 1.255, -1.874], max: [0.6, 1.855, -1.756], color: C_GIK, meta: 0 },      // N2 中層
+    { min: [-0.6, 1.925, -1.874], max: [0.6, 2.525, -1.756], color: C_GIK, meta: 0 },      // N3 上層
+    { min: [1.792, 0.795, -0.5525], max: [1.91, 1.995, 0.0475], color: C_WHITE, meta: 1 },  // E1 東牆
+    { min: [1.792, 0.655, 0.198], max: [1.91, 1.855, 0.798], color: C_WHITE, meta: 1 },     // E2 東牆
+    { min: [1.792, 0.795, 0.9485], max: [1.91, 1.995, 1.5485], color: C_WHITE, meta: 1 },   // E3 東牆
+    { min: [-1.91, 0.795, -0.5525], max: [-1.792, 1.995, 0.0475], color: C_WHITE, meta: 1 },// W1 西牆
+    { min: [-1.91, 0.655, 0.198], max: [-1.792, 1.855, 0.798], color: C_WHITE, meta: 1 },   // W2 西牆
+    { min: [-1.91, 0.795, 0.9485], max: [-1.792, 1.995, 1.5485], color: C_WHITE, meta: 1 }, // W3 西牆
+];
+
+let currentPanelConfig = 1;
+
+function buildSceneBVH() {
+    var N = sceneBoxes.length;
+
+    // 1) Prepare aabb_array for BVH builder
+    var aabb_array = new Float32Array(Math.max(9 * N, 8 * (2 * N)));
+    var totalWork = new Uint32Array(N);
+    for (var i = 0; i < N; i++) {
+        var b = sceneBoxes[i];
+        aabb_array[9 * i + 0] = b.min[0]; aabb_array[9 * i + 1] = b.min[1]; aabb_array[9 * i + 2] = b.min[2];
+        aabb_array[9 * i + 3] = b.max[0]; aabb_array[9 * i + 4] = b.max[1]; aabb_array[9 * i + 5] = b.max[2];
+        aabb_array[9 * i + 6] = (b.min[0] + b.max[0]) * 0.5;
+        aabb_array[9 * i + 7] = (b.min[1] + b.max[1]) * 0.5;
+        aabb_array[9 * i + 8] = (b.min[2] + b.max[2]) * 0.5;
+        totalWork[i] = i;
+    }
+
+    // 2) Build BVH
+    BVH_Build_Iterative(totalWork, aabb_array);
+    var nodeCount = buildnodes.length;
+    console.log("BVH nodes:", nodeCount, "for", N, "boxes");
+
+    // 3) BVH Texture (512x1, RGBA32F, 2 pixels per node)
+    var BVH_TEX_W = 512;
+    var bvhArr = new Float32Array(BVH_TEX_W * 1 * 4);
+    for (var n = 0; n < nodeCount; n++) {
+        bvhArr[(2 * n) * 4 + 0] = aabb_array[8 * n + 0];
+        bvhArr[(2 * n) * 4 + 1] = aabb_array[8 * n + 1];
+        bvhArr[(2 * n) * 4 + 2] = aabb_array[8 * n + 2];
+        bvhArr[(2 * n) * 4 + 3] = aabb_array[8 * n + 3];
+        bvhArr[(2 * n + 1) * 4 + 0] = aabb_array[8 * n + 4];
+        bvhArr[(2 * n + 1) * 4 + 1] = aabb_array[8 * n + 5];
+        bvhArr[(2 * n + 1) * 4 + 2] = aabb_array[8 * n + 6];
+        bvhArr[(2 * n + 1) * 4 + 3] = aabb_array[8 * n + 7];
+    }
+    var bvhDataTexture = new THREE.DataTexture(bvhArr, BVH_TEX_W, 1, THREE.RGBAFormat, THREE.FloatType);
+    bvhDataTexture.wrapS = THREE.ClampToEdgeWrapping;
+    bvhDataTexture.wrapT = THREE.ClampToEdgeWrapping;
+    bvhDataTexture.minFilter = THREE.NearestFilter;
+    bvhDataTexture.magFilter = THREE.NearestFilter;
+    bvhDataTexture.flipY = false;
+    bvhDataTexture.generateMipmaps = false;
+    bvhDataTexture.needsUpdate = true;
+
+    // 4) Box Data Texture (512x1, RGBA32F, 4 pixels per box)
+    var boxArr = new Float32Array(BVH_TEX_W * 1 * 4);
+    for (var i = 0; i < N; i++) {
+        var b = sceneBoxes[i];
+        var p = i * 4;
+        boxArr[(p) * 4 + 0] = b.emission[0]; boxArr[(p) * 4 + 1] = b.emission[1];
+        boxArr[(p) * 4 + 2] = b.emission[2]; boxArr[(p) * 4 + 3] = b.type;
+        boxArr[(p + 1) * 4 + 0] = b.color[0]; boxArr[(p + 1) * 4 + 1] = b.color[1];
+        boxArr[(p + 1) * 4 + 2] = b.color[2]; boxArr[(p + 1) * 4 + 3] = b.meta || 0;
+        boxArr[(p + 2) * 4 + 0] = b.min[0]; boxArr[(p + 2) * 4 + 1] = b.min[1];
+        boxArr[(p + 2) * 4 + 2] = b.min[2]; boxArr[(p + 2) * 4 + 3] = 0.0;
+        boxArr[(p + 3) * 4 + 0] = b.max[0]; boxArr[(p + 3) * 4 + 1] = b.max[1];
+        boxArr[(p + 3) * 4 + 2] = b.max[2]; boxArr[(p + 3) * 4 + 3] = 0.0;
+    }
+    var boxDataTexture = new THREE.DataTexture(boxArr, BVH_TEX_W, 1, THREE.RGBAFormat, THREE.FloatType);
+    boxDataTexture.wrapS = THREE.ClampToEdgeWrapping;
+    boxDataTexture.wrapT = THREE.ClampToEdgeWrapping;
+    boxDataTexture.minFilter = THREE.NearestFilter;
+    boxDataTexture.magFilter = THREE.NearestFilter;
+    boxDataTexture.flipY = false;
+    boxDataTexture.generateMipmaps = false;
+    boxDataTexture.needsUpdate = true;
+
+    // 5) Bind uniforms
+    if (pathTracingUniforms.tBVHTexture) {
+        pathTracingUniforms.tBVHTexture.value = bvhDataTexture;
+        pathTracingUniforms.tBoxDataTexture.value = boxDataTexture;
+    } else {
+        pathTracingUniforms.tBVHTexture = { value: bvhDataTexture };
+        pathTracingUniforms.tBoxDataTexture = { value: boxDataTexture };
+    }
+}
+
+function applyPanelConfig(config) {
+    sceneBoxes.length = BASE_BOX_COUNT;
+    var panels = (config === 1) ? panelConfig1 : panelConfig2;
+    panels.forEach(function (p) {
+        addBox(p.min, p.max, z3, p.color, 10, p.meta);
+    });
+    currentPanelConfig = config;
+    buildSceneBVH();
+    cameraIsMoving = true;
+    cameraSwitchFrames = 3; // 讓 updateVariablesAndUniforms 持續 3 幀重置累積緩衝區
+}
+
 // R2-6 旋轉物件定義（center, halfSize, rotY, color）
 const rotatedObjects = [
     // 左聲道
-    { name: 'uLeftSpeakerInvMatrix',    center: [-0.56825, 1.0965, 0.9842], half: [0.1125, 0.1725, 0.1365], rotY: -Math.PI/6, color: C_SPEAKER },
-    { name: 'uLeftStandBaseInvMatrix',  center: [-0.56825, 0.015,  0.9842], half: [0.125,  0.015,  0.15],   rotY: -Math.PI/6, color: C_STAND },
-    { name: 'uLeftStandPillarInvMatrix',center: [-0.56825, 0.46,   0.9842], half: [0.02,   0.43,   0.05],   rotY: -Math.PI/6, color: C_STAND_PILLAR },
-    { name: 'uLeftStandTopInvMatrix',   center: [-0.56825, 0.89,   0.9842], half: [0.10,   0.01,   0.125],  rotY: -Math.PI/6, color: C_STAND },
+    { name: 'uLeftSpeakerInvMatrix', center: [-0.56825, 1.0965, 0.9842], half: [0.1125, 0.1725, 0.1365], rotY: -Math.PI / 6, color: C_SPEAKER },
+    { name: 'uLeftStandBaseInvMatrix', center: [-0.56825, 0.015, 0.9842], half: [0.125, 0.015, 0.15], rotY: -Math.PI / 6, color: C_STAND },
+    { name: 'uLeftStandPillarInvMatrix', center: [-0.56825, 0.46, 0.9842], half: [0.02, 0.43, 0.05], rotY: -Math.PI / 6, color: C_STAND_PILLAR },
+    { name: 'uLeftStandTopInvMatrix', center: [-0.56825, 0.89, 0.9842], half: [0.10, 0.01, 0.125], rotY: -Math.PI / 6, color: C_STAND },
     // 右聲道
-    { name: 'uRightSpeakerInvMatrix',    center: [0.56825, 1.0965, 0.9842], half: [0.1125, 0.1725, 0.1365], rotY: Math.PI/6, color: C_SPEAKER },
-    { name: 'uRightStandBaseInvMatrix',  center: [0.56825, 0.015,  0.9842], half: [0.125,  0.015,  0.15],   rotY: Math.PI/6, color: C_STAND },
-    { name: 'uRightStandPillarInvMatrix',center: [0.56825, 0.46,   0.9842], half: [0.02,   0.43,   0.05],   rotY: Math.PI/6, color: C_STAND_PILLAR },
-    { name: 'uRightStandTopInvMatrix',   center: [0.56825, 0.89,   0.9842], half: [0.10,   0.01,   0.125],  rotY: Math.PI/6, color: C_STAND },
+    { name: 'uRightSpeakerInvMatrix', center: [0.56825, 1.0965, 0.9842], half: [0.1125, 0.1725, 0.1365], rotY: Math.PI / 6, color: C_SPEAKER },
+    { name: 'uRightStandBaseInvMatrix', center: [0.56825, 0.015, 0.9842], half: [0.125, 0.015, 0.15], rotY: Math.PI / 6, color: C_STAND },
+    { name: 'uRightStandPillarInvMatrix', center: [0.56825, 0.46, 0.9842], half: [0.02, 0.43, 0.05], rotY: Math.PI / 6, color: C_STAND_PILLAR },
+    { name: 'uRightStandTopInvMatrix', center: [0.56825, 0.89, 0.9842], half: [0.10, 0.01, 0.125], rotY: Math.PI / 6, color: C_STAND },
 ];
 const rotatedMeshes = [];
 
-let samplesPerFrame = 8.0;
+let samplesPerFrame = 1.0;
 let samplesPerFrameController;
 
 const CAMERA_PRESETS = {
-    cam1: { position: { x: -1.4, y: 2.3, z: 3.9 }, pitch: -0.18, yaw: -0.40 },
+    cam1: { position: { x: -1.115, y: 1.992, z: 3.310 }, pitch: -0.156, yaw: -0.290 },
     cam2: { position: { x: -0.9, y: 1.5, z: 3.4 }, pitch: 0.3, yaw: -0.25 },
     cam3: { position: { x: 0.0, y: 1.3, z: -1.0 }, pitch: 0.0, yaw: -Math.PI }
 };
@@ -102,16 +227,12 @@ let basicBrightness = 800.0;
 let colorTemperature = 4000;
 let wallAlbedo = 0.8;
 
-let acousticPanelVisibility = {
-    north: true,
-    south: true,
-    east: true,
-    west: true,
-    ceiling: true
-};
+// acousticPanelVisibility 已被 R2-8 Config 1/Config 2 切換取代
 
-let bloomIntensity = 0.15;
-let bloomRadius = 2.0;
+let bloomIntensity = 0.03;
+// R2-UI：bloom pyramid 層數（Jimenez / Unreal / Blender Eevee），取代舊 radius slider
+//   層數多 → halo 廣、柔；少 → halo 集中、窄
+let bloomMipCount = 7;
 
 const MAX_SAMPLES = 1000;
 const SNAPSHOT_MILESTONES = [8, 100, 300, 500, 1000];
@@ -167,11 +288,11 @@ function buildSnapshotBar() {
         img.height = Math.round(60 * (window.innerHeight / window.innerWidth));
         img.style.cssText = 'display:block; cursor:pointer;';
 
-        img.onmouseenter = function() {
+        img.onmouseenter = function () {
             preview.src = snap.src;
             preview.style.display = 'block';
         };
-        img.onmouseleave = function() {
+        img.onmouseleave = function () {
             preview.style.display = 'none';
         };
 
@@ -218,7 +339,7 @@ function downloadAllSnapshots() {
 function kelvinToRGB(kelvin) {
     const temp = kelvin / 100;
     let r, g, b;
-    
+
     if (temp <= 66) {
         r = 255;
     } else {
@@ -226,7 +347,7 @@ function kelvinToRGB(kelvin) {
         r = 329.698727446 * Math.pow(r, -0.1332047592);
         r = Math.max(0, Math.min(255, r));
     }
-    
+
     if (temp <= 66) {
         g = temp;
         g = 99.4708025861 * Math.log(g) - 161.1195681661;
@@ -236,7 +357,7 @@ function kelvinToRGB(kelvin) {
         g = 288.1221695283 * Math.pow(g, -0.0755148492);
         g = Math.max(0, Math.min(255, g));
     }
-    
+
     if (temp >= 66) {
         b = 255;
     } else if (temp <= 19) {
@@ -246,7 +367,7 @@ function kelvinToRGB(kelvin) {
         b = 138.5177312231 * Math.log(b) - 305.0447927307;
         b = Math.max(0, Math.min(255, b));
     }
-    
+
     return { r: r / 255, g: g / 255, b: b / 255 };
 }
 
@@ -282,6 +403,8 @@ function switchCamera(preset) {
 
     isPaused = true;
     cameraIsMoving = true;
+    // R2-UI：瞬間清空累加 buffer，消除前視角殘影
+    needClearAccumulation = true;
 
     // 同步 GUI 顯示
     if (camPosXCtrl) {
@@ -295,38 +418,39 @@ function switchCamera(preset) {
 
 function initSceneData() {
     demoFragmentShaderFileName = 'Home_Studio_Fragment.glsl?v=' + Date.now();
-    
+
     sceneIsDynamic = false;
     cameraFlightSpeed = 5;
     pixelRatio = 1.0;
     EPS_intersect = 0.001;
-    
+
     worldCamera.fov = 55;
     focusDistance = 4.0;
     apertureChangeSpeed = 200;
-    
-    // 預設載入 Cam 1 位置
-    cameraControlsObject.position.set(-1.4, 2.3, 3.9);
-    cameraControlsPitchObject.rotation.set(-0.18, 0, 0);
-    cameraControlsYawObject.rotation.set(0, -0.40, 0);
-    inputRotationHorizontal = -0.40;
-    inputRotationVertical = -0.18;
-    oldYawRotation = -0.40;
-    oldPitchRotation = -0.18;
-    
+
+    // 預設載入 Cam 1 位置（從 CAMERA_PRESETS 讀取）
+    var initCam = CAMERA_PRESETS.cam1;
+    cameraControlsObject.position.set(initCam.position.x, initCam.position.y, initCam.position.z);
+    cameraControlsPitchObject.rotation.set(initCam.pitch, 0, 0);
+    cameraControlsYawObject.rotation.set(0, initCam.yaw, 0);
+    inputRotationHorizontal = initCam.yaw;
+    inputRotationVertical = initCam.pitch;
+    oldYawRotation = initCam.yaw;
+    oldPitchRotation = initCam.pitch;
+
     var keys = {};
-    window.addEventListener('keydown', function(e) { keys[e.code] = true; });
-    window.addEventListener('keyup', function(e) { keys[e.code] = false; });
-    
-    document.addEventListener('mousedown', function(e) {
-        if(e.button === 0 && e.target.tagName !== 'IFRAME') {
-            if(document.pointerLockElement) {
+    window.addEventListener('keydown', function (e) { keys[e.code] = true; });
+    window.addEventListener('keyup', function (e) { keys[e.code] = false; });
+
+    document.addEventListener('mousedown', function (e) {
+        if (e.button === 0 && e.target.tagName !== 'IFRAME') {
+            if (document.pointerLockElement) {
                 document.exitPointerLock();
                 e.preventDefault();
             }
         }
     });
-    
+
     // === R2-6 旋轉物件逆矩陣 ===
     var rotBoxGeo = new THREE.BoxGeometry(1, 1, 1);
     var rotBoxMat = new THREE.MeshBasicMaterial();
@@ -339,81 +463,8 @@ function initSceneData() {
         rotatedMeshes.push(mesh);
     }
 
-    // === BVH Build ===
-    var N = sceneBoxes.length;
-
-    // 1) Prepare aabb_array for BVH builder (9 floats per box: min, max, centroid)
-    var aabb_array = new Float32Array(Math.max(9 * N, 8 * (2 * N)));
-    var totalWork = new Uint32Array(N);
-    for (var i = 0; i < N; i++) {
-        var b = sceneBoxes[i];
-        aabb_array[9*i+0] = b.min[0]; aabb_array[9*i+1] = b.min[1]; aabb_array[9*i+2] = b.min[2];
-        aabb_array[9*i+3] = b.max[0]; aabb_array[9*i+4] = b.max[1]; aabb_array[9*i+5] = b.max[2];
-        aabb_array[9*i+6] = (b.min[0] + b.max[0]) * 0.5;
-        aabb_array[9*i+7] = (b.min[1] + b.max[1]) * 0.5;
-        aabb_array[9*i+8] = (b.min[2] + b.max[2]) * 0.5;
-        totalWork[i] = i;
-    }
-
-    // 2) Build BVH (overwrites aabb_array with 8 floats/node)
-    BVH_Build_Iterative(totalWork, aabb_array);
-    var nodeCount = buildnodes.length;
-    console.log("BVH nodes:", nodeCount, "for", N, "boxes");
-
-    // 3) BVH Texture (512x1, RGBA32F, 2 pixels per node)
-    var BVH_TEX_W = 512;
-    var bvhArr = new Float32Array(BVH_TEX_W * 1 * 4);
-    for (var n = 0; n < nodeCount; n++) {
-        // pixel 2n: [idPrimitive, min.x, min.y, min.z]
-        bvhArr[(2*n)*4+0] = aabb_array[8*n+0];
-        bvhArr[(2*n)*4+1] = aabb_array[8*n+1];
-        bvhArr[(2*n)*4+2] = aabb_array[8*n+2];
-        bvhArr[(2*n)*4+3] = aabb_array[8*n+3];
-        // pixel 2n+1: [idRightChild, max.x, max.y, max.z]
-        bvhArr[(2*n+1)*4+0] = aabb_array[8*n+4];
-        bvhArr[(2*n+1)*4+1] = aabb_array[8*n+5];
-        bvhArr[(2*n+1)*4+2] = aabb_array[8*n+6];
-        bvhArr[(2*n+1)*4+3] = aabb_array[8*n+7];
-    }
-    var bvhDataTexture = new THREE.DataTexture(bvhArr, BVH_TEX_W, 1, THREE.RGBAFormat, THREE.FloatType);
-    bvhDataTexture.wrapS = THREE.ClampToEdgeWrapping;
-    bvhDataTexture.wrapT = THREE.ClampToEdgeWrapping;
-    bvhDataTexture.minFilter = THREE.NearestFilter;
-    bvhDataTexture.magFilter = THREE.NearestFilter;
-    bvhDataTexture.flipY = false;
-    bvhDataTexture.generateMipmaps = false;
-    bvhDataTexture.needsUpdate = true;
-
-    // 4) Box Data Texture (512x1, RGBA32F, 4 pixels per box)
-    var boxArr = new Float32Array(BVH_TEX_W * 1 * 4);
-    for (var i = 0; i < N; i++) {
-        var b = sceneBoxes[i];
-        var p = i * 4;
-        // pixel 0: [emission.rgb, type]
-        boxArr[(p)*4+0] = b.emission[0]; boxArr[(p)*4+1] = b.emission[1];
-        boxArr[(p)*4+2] = b.emission[2]; boxArr[(p)*4+3] = b.type;
-        // pixel 1: [color.rgb, rotY(reserved)]
-        boxArr[(p+1)*4+0] = b.color[0]; boxArr[(p+1)*4+1] = b.color[1];
-        boxArr[(p+1)*4+2] = b.color[2]; boxArr[(p+1)*4+3] = 0.0;
-        // pixel 2: [min.xyz, reserved]
-        boxArr[(p+2)*4+0] = b.min[0]; boxArr[(p+2)*4+1] = b.min[1];
-        boxArr[(p+2)*4+2] = b.min[2]; boxArr[(p+2)*4+3] = 0.0;
-        // pixel 3: [max.xyz, reserved]
-        boxArr[(p+3)*4+0] = b.max[0]; boxArr[(p+3)*4+1] = b.max[1];
-        boxArr[(p+3)*4+2] = b.max[2]; boxArr[(p+3)*4+3] = 0.0;
-    }
-    var boxDataTexture = new THREE.DataTexture(boxArr, BVH_TEX_W, 1, THREE.RGBAFormat, THREE.FloatType);
-    boxDataTexture.wrapS = THREE.ClampToEdgeWrapping;
-    boxDataTexture.wrapT = THREE.ClampToEdgeWrapping;
-    boxDataTexture.minFilter = THREE.NearestFilter;
-    boxDataTexture.magFilter = THREE.NearestFilter;
-    boxDataTexture.flipY = false;
-    boxDataTexture.generateMipmaps = false;
-    boxDataTexture.needsUpdate = true;
-
-    // 5) Bind uniforms
-    pathTracingUniforms.tBVHTexture = { value: bvhDataTexture };
-    pathTracingUniforms.tBoxDataTexture = { value: boxDataTexture };
+    // === BVH Build（R2-8：含吸音板，預設 Config 1）===
+    applyPanelConfig(1);
 
     // 6) 旋轉物件逆矩陣 uniforms
     for (var ri = 0; ri < rotatedObjects.length; ri++) {
@@ -423,7 +474,7 @@ function initSceneData() {
     // 7) 載入窗外景色貼圖
     const winTexLoader = new THREE.TextureLoader();
     winTexLoader.crossOrigin = 'anonymous';
-    winTexLoader.load('https://duk.tw/WfvcAv.png', function(tex) {
+    winTexLoader.load('https://duk.tw/WfvcAv.png', function (tex) {
         tex.minFilter = THREE.LinearFilter;
         tex.magFilter = THREE.LinearFilter;
         tex.flipY = true;
@@ -431,11 +482,11 @@ function initSceneData() {
         cameraIsMoving = true;
     });
     // 預設 1x1 白色貼圖，貼圖載入前不會黑屏
-    pathTracingUniforms.uWinTex = { value: new THREE.DataTexture(new Uint8Array([255,255,255,255]), 1, 1, THREE.RGBAFormat) };
+    pathTracingUniforms.uWinTex = { value: new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat) };
 
     // 8) KH150 喇叭正面/背面貼圖
     // 黑底 + 從中心放大 4%，裁掉產品照白色角落
-    var defaultTex = new THREE.DataTexture(new Uint8Array([128,128,128,255]), 1, 1, THREE.RGBAFormat);
+    var defaultTex = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1, THREE.RGBAFormat);
     pathTracingUniforms.u150F = { value: defaultTex };
     pathTracingUniforms.u150B = { value: defaultTex };
 
@@ -457,14 +508,14 @@ function initSceneData() {
     }
 
     var spkF = new Image();
-    spkF.onload = function() {
+    spkF.onload = function () {
         pathTracingUniforms.u150F.value = prepSpeakerTex(spkF);
         cameraIsMoving = true;
     };
     spkF.src = 'textures/kh150_front.jpg';
 
     var spkB = new Image();
-    spkB.onload = function() {
+    spkB.onload = function () {
         pathTracingUniforms.u150B.value = prepSpeakerTex(spkB);
         cameraIsMoving = true;
     };
@@ -475,21 +526,21 @@ function initSceneData() {
     pathTracingUniforms.u750B = { value: defaultTex };
 
     var sub750F = new Image();
-    sub750F.onload = function() {
+    sub750F.onload = function () {
         pathTracingUniforms.u750F.value = prepSpeakerTex(sub750F);
         cameraIsMoving = true;
     };
     sub750F.src = 'textures/kh750_front.jpg';
 
     var sub750B = new Image();
-    sub750B.onload = function() {
+    sub750B.onload = function () {
         pathTracingUniforms.u750B.value = prepSpeakerTex(sub750B);
         cameraIsMoving = true;
     };
     sub750B.src = 'textures/kh750_back.jpg';
 
     // 9) 木門 / 鐵門貼圖（本地檔案，Image + CanvasTexture 載入）
-    var defaultDoorTex = new THREE.DataTexture(new Uint8Array([128,128,128,255]), 1, 1, THREE.RGBAFormat);
+    var defaultDoorTex = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1, THREE.RGBAFormat);
     pathTracingUniforms.uWoodDoorTex = { value: defaultDoorTex };
     pathTracingUniforms.uIronDoorTex = { value: defaultDoorTex };
 
@@ -507,20 +558,38 @@ function initSceneData() {
     }
 
     var woodDoorImg = new Image();
-    woodDoorImg.onload = function() {
+    woodDoorImg.onload = function () {
         pathTracingUniforms.uWoodDoorTex.value = prepDoorTex(woodDoorImg);
         cameraIsMoving = true;
     };
     woodDoorImg.src = 'textures/wood_door.jpeg';
 
     var ironDoorImg = new Image();
-    ironDoorImg.onload = function() {
+    ironDoorImg.onload = function () {
         pathTracingUniforms.uIronDoorTex.value = prepDoorTex(ironDoorImg);
         cameraIsMoving = true;
     };
     ironDoorImg.src = 'textures/iron_door.jpg';
 
-    // 10) ISO-PUCK MINI 世界座標（8 顆，每側 4 顆）
+    // 10) GIK 吸音板貼圖
+    pathTracingUniforms.uGikGrayTex = { value: defaultDoorTex };
+    pathTracingUniforms.uGikWhiteTex = { value: defaultDoorTex };
+
+    var gikGrayImg = new Image();
+    gikGrayImg.onload = function () {
+        pathTracingUniforms.uGikGrayTex.value = prepDoorTex(gikGrayImg);
+        cameraIsMoving = true;
+    };
+    gikGrayImg.src = 'textures/gik244_grey.jpeg';
+
+    var gikWhiteImg = new Image();
+    gikWhiteImg.onload = function () {
+        pathTracingUniforms.uGikWhiteTex.value = prepDoorTex(gikWhiteImg);
+        cameraIsMoving = true;
+    };
+    gikWhiteImg.src = 'textures/gik244_white.jpeg';
+
+    // 11) ISO-PUCK MINI 世界座標（8 顆，每側 4 顆）
     var puckRadius = 0.022;   // 直徑 4.4cm
     var puckHalfH = 0.012;    // 高度 2.4cm
     var puckXOff = 0.10 - puckRadius;   // 0.078，圓週切齊頂板邊長
@@ -528,15 +597,15 @@ function initSceneData() {
     var puckYLocal = 0.01 + puckHalfH;  // 頂板表面上方的 puck 中心 Y
     var puckLocalOffsets = [
         new THREE.Vector3(-puckXOff, puckYLocal, -puckZOff),
-        new THREE.Vector3(-puckXOff, puckYLocal,  puckZOff),
-        new THREE.Vector3( puckXOff, puckYLocal, -puckZOff),
-        new THREE.Vector3( puckXOff, puckYLocal,  puckZOff)
+        new THREE.Vector3(-puckXOff, puckYLocal, puckZOff),
+        new THREE.Vector3(puckXOff, puckYLocal, -puckZOff),
+        new THREE.Vector3(puckXOff, puckYLocal, puckZOff)
     ];
     var puckPositions = [];
     // index 3 = 左頂板, index 7 = 右頂板
-    [3, 7].forEach(function(topIdx) {
+    [3, 7].forEach(function (topIdx) {
         var mat = rotatedMeshes[topIdx].matrixWorld;
-        puckLocalOffsets.forEach(function(off) {
+        puckLocalOffsets.forEach(function (off) {
             var p = off.clone().applyMatrix4(mat);
             puckPositions.push(p);
         });
@@ -545,23 +614,60 @@ function initSceneData() {
     pathTracingUniforms.uPuckRadius = { value: puckRadius };
     pathTracingUniforms.uPuckHalfH = { value: puckHalfH };
 
+    // R2-11 中央吸頂燈（圓柱燈體 + 底面發光 quad）
+    pathTracingUniforms.uCeilingLampPos = { value: new THREE.Vector3(0, 2.855, 0.591) };
+    pathTracingUniforms.uCeilingLampRadius = { value: 0.235 };
+    pathTracingUniforms.uCeilingLampHalfH = { value: 0.02 };
+    // uLightEmission 初始值（4000K × 800 × 0.05764），每幀由 updateVariablesAndUniforms 更新
+    pathTracingUniforms.uLightEmission = { value: new THREE.Vector3(8.0, 7.6, 6.4) };
+
     if (mouseControl) {
         setupGUI();
     }
 }
 
+// CMD (或 Ctrl) + 左鍵點擊滑桿即重設為預設值
+function attachMetaClickReset(ctrl, defaultValue) {
+    if (!ctrl || !ctrl.domElement) return ctrl;
+    ctrl.domElement.addEventListener('mousedown', function (e) {
+        if (!(e.metaKey || e.ctrlKey)) return;
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        ctrl.setValue(defaultValue);
+    }, true);
+    return ctrl;
+}
+
+// 強制重啟累加（即使已進入 1000 SPP 休眠也能即時刷新）
+// 使用 sceneParamsChanged 讓 animate() 開頭清除 cameraIsMoving 後仍能重新觸發 restart
+function wakeRender() {
+    sceneParamsChanged = true;
+}
+
 function setupGUI() {
-    const qualityObject = { samples_per_frame: 8.0 };
+    const qualityObject = { samples_per_frame: 1.0 };
     samplesPerFrameController = gui.add(qualityObject, 'samples_per_frame', 1.0, 8.0, 1.0).onChange(function (value) {
         samplesPerFrame = value;
         pathTracingUniforms.uSamplesPerFrame.value = value;
     });
-    
+    attachMetaClickReset(samplesPerFrameController, 1.0);
+
+    // R2-UI：最大反彈次數（1~14，預設 4），shader 內動態 break 控制實際 bounce 數
+    const bouncesObject = { max_bounces: 4 };
+    const bouncesCtrl = gui.add(bouncesObject, 'max_bounces', 1, 14, 1).onChange(function (value) {
+        if (pathTracingUniforms && pathTracingUniforms.uMaxBounces) {
+            pathTracingUniforms.uMaxBounces.value = value;
+        }
+        wakeRender();
+    });
+    attachMetaClickReset(bouncesCtrl, 4);
+
     const cameraFolder = gui.addFolder('Camera View');
     var camActions = {
-        cam1: function() { switchCamera('cam1'); },
-        cam2: function() { switchCamera('cam2'); },
-        cam3: function() { switchCamera('cam3'); }
+        cam1: function () { switchCamera('cam1'); },
+        cam2: function () { switchCamera('cam2'); },
+        cam3: function () { switchCamera('cam3'); }
     };
     cameraFolder.add(camActions, 'cam1').name('Cam 1');
     cameraFolder.add(camActions, 'cam2').name('Cam 2');
@@ -597,60 +703,86 @@ function setupGUI() {
     camPitchCtrl = cameraFolder.add(camPos, 'pitch', -1.5, 1.5, 0.01).name('pitch').onChange(applyCamManual);
     camYawCtrl = cameraFolder.add(camPos, 'yaw', -Math.PI, Math.PI, 0.01).name('yaw').onChange(applyCamManual);
 
+    // CMD+click reset（以 cam1 為預設基準）
+    attachMetaClickReset(camPosXCtrl, CAMERA_PRESETS.cam1.position.x);
+    attachMetaClickReset(camPosYCtrl, CAMERA_PRESETS.cam1.position.y);
+    attachMetaClickReset(camPosZCtrl, CAMERA_PRESETS.cam1.position.z);
+    attachMetaClickReset(camPitchCtrl, CAMERA_PRESETS.cam1.pitch);
+    attachMetaClickReset(camYawCtrl, CAMERA_PRESETS.cam1.yaw);
+
     cameraFolder.open();
 
     // Prevent GUI clicks from bubbling to body's pointer lock handler
-    gui.domElement.addEventListener('click', function(e) { e.stopPropagation(); }, false);
-    
+    gui.domElement.addEventListener('click', function (e) { e.stopPropagation(); }, false);
+
     const lightFolder = gui.addFolder('Light Settings');
-    
-    lightFolder.add({ brightness: 800 }, 'brightness', 0, 4000, 1).onChange(function (value) {
+
+    const brightnessCtrl = lightFolder.add({ brightness: 800 }, 'brightness', 0, 4000, 1).onChange(function (value) {
         basicBrightness = value;
-        cameraIsMoving = true;
+        wakeRender();
     });
-    
-    lightFolder.add({ colorTemp: 4000 }, 'colorTemp', 2700, 6500, 100).onChange(function (value) {
+    attachMetaClickReset(brightnessCtrl, 800);
+
+    const colorTempCtrl = lightFolder.add({ colorTemp: 4000 }, 'colorTemp', 2700, 6500, 100).onChange(function (value) {
         colorTemperature = value;
-        cameraIsMoving = true;
+        wakeRender();
     });
-    
+    attachMetaClickReset(colorTempCtrl, 4000);
+
     lightFolder.open();
-    
+
     const matFolder = gui.addFolder('Material Settings');
-    
-    matFolder.add({ wallAlbedo: 0.8 }, 'wallAlbedo', 0.1, 1.0, 0.05).onChange(function (value) {
+
+    const wallAlbedoCtrl = matFolder.add({ wallAlbedo: 0.8 }, 'wallAlbedo', 0.1, 1.0, 0.05).onChange(function (value) {
         wallAlbedo = value;
-        cameraIsMoving = true;
+        if (pathTracingUniforms.uWallAlbedo) {
+            pathTracingUniforms.uWallAlbedo.value = value;
+        }
+        wakeRender();
     });
-    
+    attachMetaClickReset(wallAlbedoCtrl, 0.8);
+
     const panelFolder = matFolder.addFolder('Acoustic Panels');
-    panelFolder.add(acousticPanelVisibility, 'north').onChange(function () { cameraIsMoving = true; });
-    panelFolder.add(acousticPanelVisibility, 'south').onChange(function () { cameraIsMoving = true; });
-    panelFolder.add(acousticPanelVisibility, 'east').onChange(function () { cameraIsMoving = true; });
-    panelFolder.add(acousticPanelVisibility, 'west').onChange(function () { cameraIsMoving = true; });
-    panelFolder.add(acousticPanelVisibility, 'ceiling').onChange(function () { cameraIsMoving = true; });
+    var panelActions = {
+        config1: function () { applyPanelConfig(1); },
+        config2: function () { applyPanelConfig(2); }
+    };
+    panelFolder.add(panelActions, 'config1').name('Config 1 (3片)');
+    panelFolder.add(panelActions, 'config2').name('Config 2 (9片)');
     panelFolder.open();
-    
+
     matFolder.open();
-    
+
     const bloomFolder = gui.addFolder('Bloom');
-    
-    bloomFolder.add({ intensity: 0.15 }, 'intensity', 0.0, 2.0, 0.01).onChange(function (value) {
+
+    const bloomIntensityCtrl = bloomFolder.add({ intensity: 0.03 }, 'intensity', 0.0, 1.0, 0.001).onChange(function (value) {
         bloomIntensity = value;
-        if (sampleCounter >= 1500 && screenOutputUniforms) {
+        if (screenOutputUniforms && screenOutputUniforms.uBloomIntensity) {
             screenOutputUniforms.uBloomIntensity.value = bloomIntensity;
         }
     });
-    
-    bloomFolder.add({ radius: 2.0 }, 'radius', 1.0, 20.0, 0.5).onChange(function (value) {
-        bloomRadius = value;
-        if (sampleCounter >= 1500 && screenOutputUniforms) {
-            screenOutputUniforms.uBloomRadius = { value: bloomRadius };
+    attachMetaClickReset(bloomIntensityCtrl, 0.03);
+
+    // R2-UI: Bloom pyramid 層數（3~7）
+    //   3 層：halo 集中，約 full-res ±32 px；7 層：halo 廣域，約 full-res ±512 px
+    //   層數由 JS 端 truncate downsample/upsample chain 實現，無 shader 切換成本
+    const bloomLayersCtrl = bloomFolder.add({ layers: 7 }, 'layers', 3, 7, 1).onChange(function (value) {
+        bloomMipCount = value;
+        window.bloomMipCount = value;
+    });
+    attachMetaClickReset(bloomLayersCtrl, 7);
+
+    // R2-UI: Bloom debug checkbox — 勾選時直接顯示 bloom target（verify pipeline，全黑 = brightpass 砍光或 STEP 2.5 未跑）
+    bloomFolder.add({ debug: false }, 'debug').onChange(function (value) {
+        if (screenOutputUniforms && screenOutputUniforms.uBloomDebug) {
+            screenOutputUniforms.uBloomDebug.value = value ? 1.0 : 0.0;
         }
     });
-    
+
+    bloomFolder.open();
+
     const snapshotFolder = gui.addFolder('Snapshot');
-    
+
     snapshotFolder.add({ capture: 'Capture' }, 'capture').onChange(function () {
         const dataURL = captureSnapshot();
         snapshots.push({
@@ -661,11 +793,11 @@ function setupGUI() {
         capturedMilestones.add(sampleCounter);
         buildSnapshotBar();
     });
-    
+
     snapshotFolder.add({ downloadAll: 'Download All' }, 'downloadAll').onChange(function () {
         downloadAllSnapshots();
     });
-    
+
     snapshotFolder.open();
 }
 
@@ -693,14 +825,12 @@ function updateVariablesAndUniforms() {
     }
 
     pathTracingUniforms.uSamplesPerFrame.value = samplesPerFrame;
-    
-    if (pathTracingUniforms.uBasicBrightness) {
-        pathTracingUniforms.uBasicBrightness.value = basicBrightness;
-    }
-    if (pathTracingUniforms.uWallAlbedo) {
-        pathTracingUniforms.uWallAlbedo.value = wallAlbedo;
-    }
-    
+
+    // R2-11 中央吸頂燈：色溫 × 亮度 × 圓面積補償（0.01 / (π × 0.235²) ≈ 0.05764）
+    var rgb = kelvinToRGB(colorTemperature);
+    var s = basicBrightness * 0.05764;
+    pathTracingUniforms.uLightEmission.value.set(rgb.r * s, rgb.g * s, rgb.b * s);
+
     // 每幀同步攝影機實際值到 GUI（updateDisplay 不觸發 onChange）
     if (camPosXCtrl) {
         camPosXCtrl.object.x = cameraControlsObject.position.x;

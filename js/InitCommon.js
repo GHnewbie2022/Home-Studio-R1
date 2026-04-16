@@ -18,6 +18,15 @@ let pathTracingMaterial, pathTracingMesh;
 let screenCopyMaterial, screenCopyMesh;
 let screenOutputMaterial, screenOutputMesh;
 let pathTracingRenderTarget, screenCopyRenderTarget;
+// R2-UI Bloom：multi-pass bloom 的 1/4 解析度 ping-pong render targets + scenes/materials
+// R2-UI Bloom multi-scale：4 層 mip chain (1/2, 1/4, 1/8, 1/16)
+let bloomMip = []; // [0]=1/2, [1]=1/4, [2]=1/8, [3]=1/16, [4]=1/32, [5]=1/64, [6]=1/128
+// R2-UI：金字塔有效層數，UI slider 可切 3~7，影響 STEP 2.5 的 downsample/upsample chain 長度
+window.bloomMipCount = 7;
+let bloomBrightpassScene, bloomDownsampleScene, bloomUpsampleScene;
+let bloomBrightpassMaterial, bloomDownsampleMaterial, bloomUpsampleMaterial;
+let bloomBrightpassMesh, bloomDownsampleMesh, bloomUpsampleMesh;
+let bloomBrightpassUniforms, bloomDownsampleUniforms, bloomUpsampleUniforms;
 let orthoCamera, worldCamera;
 let renderer, clockTimer;
 let frameTime, elapsedTime;
@@ -42,6 +51,13 @@ let decreaseFocusDist = false;
 let focusDistanceChangeSpeed = 1;
 let pixelRatio = 1.0;
 let windowIsBeingResized = false;
+// R2-UI：參數變化時觸發一次「相機剛移動完」的 restart，讓累加 buffer 乾淨刷新
+let sceneParamsChanged = false;
+// R2-UI：切換 Cam 時整塊清空 render target，瞬間消除殘影（犧牲短暫噪點）
+let needClearAccumulation = false;
+// R2-UI：60 FPS cap（避免 120Hz 螢幕把 path tracing 推到 120 FPS 滿載）
+let lastRenderTime = 0;
+const FRAME_INTERVAL_MS = 1000 / 60;
 let TWO_PI = Math.PI * 2;
 let sampleCounter = 0.0; // will get increased by 1 in animation loop before rendering
 let frameCounter = 1.0; // 1 instead of 0 because it is used as a rng() seed in pathtracing shader
@@ -311,6 +327,18 @@ function onWindowResize(event)
 	pathTracingRenderTarget.setSize(context.drawingBufferWidth, context.drawingBufferHeight);
 	screenCopyRenderTarget.setSize(context.drawingBufferWidth, context.drawingBufferHeight);
 
+	// R2-UI Bloom pyramid：7 層 mip (1/2 ~ 1/128) 同步 resize
+	if (bloomMip && bloomMip.length === 7)
+	{
+		const w = context.drawingBufferWidth;
+		const h = context.drawingBufferHeight;
+		for (let i = 0; i < 7; i++)
+		{
+			const div = 1 << (i + 1); // 2, 4, 8, 16, 32, 64, 128
+			bloomMip[i].setSize(Math.max(1, Math.floor(w / div)), Math.max(1, Math.floor(h / div)));
+		}
+	}
+
 	worldCamera.aspect = SCREEN_WIDTH / SCREEN_HEIGHT;
 	// the following is normally used with traditional rasterized rendering, but it is not needed for our fragment shader raytraced rendering 
 	///worldCamera.updateProjectionMatrix();
@@ -414,9 +442,25 @@ function init()
 	gui.domElement.style.MozUserSelect = "none";
 
 
+	// CMD (或 Ctrl) + 左鍵點擊滑桿即重設為預設值
+	function _attachMetaClickReset(ctrl, defaultValue)
+	{
+		if (!ctrl || !ctrl.domElement) return ctrl;
+		ctrl.domElement.addEventListener('mousedown', function (e)
+		{
+			if (!(e.metaKey || e.ctrlKey)) return;
+			if (e.button !== 0) return;
+			e.preventDefault();
+			e.stopPropagation();
+			ctrl.setValue(defaultValue);
+		}, true);
+		return ctrl;
+	}
+
 	if (mouseControl) // on desktop
 	{
 		pixel_ResolutionController = gui.add(pixel_ResolutionObject, 'pixel_Resolution', 0.5, 2.0, 0.1).onChange(handlePixelResolutionChange);
+		_attachMetaClickReset(pixel_ResolutionController, pixel_ResolutionObject.pixel_Resolution);
 
 		gui.domElement.addEventListener("mouseenter", function (event) 
 		{
@@ -474,6 +518,7 @@ function init()
 	if (!mouseControl) // on mobile
 	{
 		pixel_ResolutionController = gui.add(pixel_ResolutionObject, 'pixel_Resolution', 0.5, 1.0, 0.05).onChange(handlePixelResolutionChange);
+		_attachMetaClickReset(pixel_ResolutionController, pixel_ResolutionObject.pixel_Resolution);
 		orthographicCamera_ToggleController = gui.add(orthographicCamera_ToggleObject, 'Orthographic_Camera', false).onChange(handleCameraProjectionChange);
 	}
 
@@ -596,6 +641,29 @@ function initTHREEjs()
 	});
 	screenCopyRenderTarget.texture.generateMipmaps = false;
 
+	// R2-UI Bloom multi-scale：4 層 mip chain (1/2, 1/4, 1/8, 1/16)
+	// LinearFilter 讓上採樣 tent filter 與 composite 的 bilinear 都能平滑插值
+	{
+		const W = context.drawingBufferWidth;
+		const H = context.drawingBufferHeight;
+		// 7 層：1/2, 1/4, 1/8, 1/16, 1/32, 1/64, 1/128
+		for (let i = 0; i < 7; i++)
+		{
+			const div = 1 << (i + 1);
+			const mw = Math.max(1, Math.floor(W / div));
+			const mh = Math.max(1, Math.floor(H / div));
+			bloomMip[i] = new THREE.WebGLRenderTarget(mw, mh, {
+				minFilter: THREE.LinearFilter,
+				magFilter: THREE.LinearFilter,
+				format: THREE.RGBAFormat,
+				type: THREE.FloatType,
+				depthBuffer: false,
+				stencilBuffer: false
+			});
+			bloomMip[i].texture.generateMipmaps = false;
+		}
+	}
+
 	
 
 	// setup scene/demo-specific objects, variables, GUI elements, and data
@@ -651,6 +719,12 @@ function initTHREEjs()
 	pathTracingUniforms.uCameraIsMoving = { type: "b1", value: false };
 	pathTracingUniforms.uUseOrthographicCamera = { type: "b1", value: false };
 	pathTracingUniforms.uSceneIsDynamic = { type: "b1", value: false };
+
+	// R2-UI: 牆面反射率（牆/天花板/柱樑），預設 0.8
+	pathTracingUniforms.uWallAlbedo = { type: "f", value: 0.8 };
+
+	// R2-UI: 最大反彈次數 runtime 可調（硬性上限 14 寫死在 shader for 迴圈編譯期）
+	pathTracingUniforms.uMaxBounces = { type: "f", value: 4.0 };
 
 	pathTracingDefines = {
 		//NUMBER_OF_TRIANGLES: total_number_of_triangles
@@ -717,6 +791,8 @@ function initTHREEjs()
 
 	screenOutputUniforms = {
 		tPathTracedImageTexture: { type: "t", value: pathTracingRenderTarget.texture },
+		// R2-UI Bloom multi-scale：最終合成貼圖（1/2 解析度 mip[0]，pyramid upsample 後的結果）
+		tBloomTexture: { type: "t", value: bloomMip[0].texture },
 		uSampleCounter: { type: "f", value: 0.0 },
 		uOneOverSampleCounter: { type: "f", value: 0.0 },
 		uPixelEdgeSharpness: { type: "f", value: pixelEdgeSharpness },
@@ -724,7 +800,11 @@ function initTHREEjs()
 		//uFilterDecaySpeed: { type: "f", value: filterDecaySpeed },
 		uCameraIsMoving: { type: "b1", value: false },
 		uSceneIsDynamic: { type: "b1", value: sceneIsDynamic },
-		uUseToneMapping: { type: "b1", value: useToneMapping }
+		uUseToneMapping: { type: "b1", value: useToneMapping },
+		// R2-UI: Bloom composite 強度，0 = 關閉
+		uBloomIntensity: { type: "f", value: 0.03 },
+		// R2-UI: Bloom debug，1.0 = 直接顯示 bloom target（verify pipeline）
+		uBloomDebug: { type: "f", value: 0.0 }
 	};
 
 	fileLoader.load('shaders/ScreenOutput_Fragment.glsl', function (shaderText)
@@ -745,6 +825,76 @@ function initTHREEjs()
 	});
 
 
+	// R2-UI Bloom pyramid (Jimenez / Unreal / Blender Eevee)：
+	// brightpass：pathTracing(full) → bloomMip[0](1/2)，13-tap Karis average downsample + 亮度閾值
+	// downsample：mip[n] → mip[n+1]，13-tap partial average，連做至多 6 次 (1/2 → 1/128)
+	// upsample：mip[n+1] → mip[n]，9-tap tent filter（radius=1 fix）+ AdditiveBlending，連做至多 6 次 (1/128 → 1/2)
+	// 實際層數由 window.bloomMipCount 控制 (3~7)
+
+	bloomBrightpassScene = new THREE.Scene();
+	bloomDownsampleScene = new THREE.Scene();
+	bloomUpsampleScene = new THREE.Scene();
+	bloomBrightpassScene.add(orthoCamera);
+	bloomDownsampleScene.add(orthoCamera);
+	bloomUpsampleScene.add(orthoCamera);
+
+	bloomBrightpassUniforms = {
+		tPathTracedImageTexture: { type: "t", value: pathTracingRenderTarget.texture },
+		uOneOverSampleCounter: { type: "f", value: 1.0 }
+	};
+
+	// downsample/upsample 每個 pass 動態改 tBloomTexture.value，共用單一 material/scene
+	bloomDownsampleUniforms = {
+		tBloomTexture: { type: "t", value: bloomMip[0].texture }
+	};
+
+	bloomUpsampleUniforms = {
+		tBloomTexture: { type: "t", value: bloomMip[6].texture }
+	};
+
+	fileLoader.load('shaders/Bloom_Brightpass_Fragment.glsl', function (shaderText)
+	{
+		bloomBrightpassMaterial = new THREE.ShaderMaterial({
+			uniforms: bloomBrightpassUniforms,
+			vertexShader: pathTracingVertexShader,
+			fragmentShader: shaderText,
+			depthWrite: false,
+			depthTest: false
+		});
+		bloomBrightpassMesh = new THREE.Mesh(triangleGeometry, bloomBrightpassMaterial);
+		bloomBrightpassScene.add(bloomBrightpassMesh);
+	});
+
+	fileLoader.load('shaders/Bloom_Downsample_Fragment.glsl', function (shaderText)
+	{
+		bloomDownsampleMaterial = new THREE.ShaderMaterial({
+			uniforms: bloomDownsampleUniforms,
+			vertexShader: pathTracingVertexShader,
+			fragmentShader: shaderText,
+			depthWrite: false,
+			depthTest: false
+		});
+		bloomDownsampleMesh = new THREE.Mesh(triangleGeometry, bloomDownsampleMaterial);
+		bloomDownsampleScene.add(bloomDownsampleMesh);
+	});
+
+	fileLoader.load('shaders/Bloom_Upsample_Fragment.glsl', function (shaderText)
+	{
+		bloomUpsampleMaterial = new THREE.ShaderMaterial({
+			uniforms: bloomUpsampleUniforms,
+			vertexShader: pathTracingVertexShader,
+			fragmentShader: shaderText,
+			depthWrite: false,
+			depthTest: false,
+			// R2-UI：加法混合 → upsample 結果與 dest mip 既有 downsample 結果疊加
+			blending: THREE.AdditiveBlending,
+			transparent: true
+		});
+		bloomUpsampleMesh = new THREE.Mesh(triangleGeometry, bloomUpsampleMaterial);
+		bloomUpsampleScene.add(bloomUpsampleMesh);
+	});
+
+
 	// this 'jumpstarts' the initial dimensions and parameters for the window and renderer
 	onWindowResize();
 
@@ -758,7 +908,15 @@ function initTHREEjs()
 
 function animate()
 {
-	
+	// R2-UI：60 FPS cap —— 間隔不足 ~16.7ms 直接 reschedule，避免 120Hz 螢幕上全速 path tracing
+	const nowMs = performance.now();
+	if (nowMs - lastRenderTime < FRAME_INTERVAL_MS)
+	{
+		requestAnimationFrame(animate);
+		return;
+	}
+	lastRenderTime = nowMs;
+
 	// update clock
 	clockTimer.update();
 	frameTime = clockTimer.getDelta();
@@ -779,6 +937,13 @@ function animate()
 	{
 		cameraIsMoving = true;
 		windowIsBeingResized = false;
+	}
+
+	// R2-UI：GUI 參數變化 → 強制累加 buffer 刷新（即使原本已在 1000 SPP 休眠）
+	if (sceneParamsChanged)
+	{
+		cameraIsMoving = true;
+		sceneParamsChanged = false;
 	}
 
 	// check user controls
@@ -1165,6 +1330,23 @@ function animate()
 	screenOutputUniforms.uOneOverSampleCounter.value = 1.0 / sampleCounter;
 
 
+	// R2-UI：切換 Cam 或其他觸發源要求「立刻清除殘影」，清空兩個 ping-pong buffer 再往下走
+	if (needClearAccumulation)
+	{
+		renderer.setRenderTarget(pathTracingRenderTarget);
+		renderer.clear();
+		renderer.setRenderTarget(screenCopyRenderTarget);
+		renderer.clear();
+		sampleCounter = 1.0;
+		frameCounter = 1.0;
+		pathTracingUniforms.uSampleCounter.value = sampleCounter;
+		pathTracingUniforms.uFrameCounter.value = frameCounter;
+		pathTracingUniforms.uPreviousSampleCount.value = 1.0;
+		screenOutputUniforms.uSampleCounter.value = sampleCounter;
+		screenOutputUniforms.uOneOverSampleCounter.value = 1.0;
+		needClearAccumulation = false;
+	}
+
 	// RENDERING in 3 steps
 	// 到達 MAX_SAMPLES 後跳過 STEP 1/2，凍結累加 buffer，只保留 STEP 3 顯示
 	var renderingStopped = (typeof MAX_SAMPLES !== 'undefined' && sampleCounter >= MAX_SAMPLES && !cameraIsMoving);
@@ -1182,6 +1364,56 @@ function animate()
 		// This will be used as a new starting point for Step 1 above (essentially creating ping-pong buffers)
 		renderer.setRenderTarget(screenCopyRenderTarget);
 		renderer.render(screenCopyScene, orthoCamera);
+	}
+
+	// STEP 2.5 (R2-UI Bloom multi-scale pyramid)
+	// 只在 1) 非休眠、2) bloom 強度 > 0（或 debug on）、3) 所有 bloom material 載入完成 時執行
+	// 執行節奏：前 50 frame 連續跑（早期視覺即時）；之後每 10 frame 跑一次（bloom 是低頻信號）
+	// 休眠時完全跳過，bloom mip chain 靜態保留給 STEP 3 使用 → GPU 大幅降載
+	//
+	// Pipeline (Jimenez / Unreal / Blender Eevee pyramid)：
+	//   1. brightpass: pathTracing(full) → mip[0](1/2) — 13-tap Karis average 殺 firefly
+	//   2 ~ N. downsample: mip[i] → mip[i+1] — 13-tap partial average
+	//   N+1 ~ 2N-1. upsample additive: mip[i] → mip[i-1] — 9-tap tent radius=1 + additive blend
+	// mipCount 由 window.bloomMipCount 控制 (3 ~ 7)，halo 廣度由層數決定
+	let mipCount = window.bloomMipCount;
+	if (typeof mipCount !== 'number' || mipCount < 2) mipCount = 7;
+	if (mipCount > 7) mipCount = 7;
+	if (mipCount < 2) mipCount = 2;
+	if (!renderingStopped
+		&& (screenOutputUniforms.uBloomIntensity.value > 0.0 || screenOutputUniforms.uBloomDebug.value > 0.5)
+		&& bloomBrightpassMaterial && bloomDownsampleMaterial && bloomUpsampleMaterial
+		&& (sampleCounter < 50.0 || (sampleCounter % 10.0) < 1.0))
+	{
+		// 同步 brightpass 所需 sampleCounter 倒數
+		bloomBrightpassUniforms.uOneOverSampleCounter.value = screenOutputUniforms.uOneOverSampleCounter.value;
+
+		const prevAutoClear = renderer.autoClear;
+		renderer.autoClear = true;
+
+		// Pass 1：brightpass + 2x Karis downsample → mip[0] (1/2 res)
+		renderer.setRenderTarget(bloomMip[0]);
+		renderer.render(bloomBrightpassScene, orthoCamera);
+
+		// Downsample chain：mip[0] → mip[1] → ... → mip[mipCount-1]
+		for (let i = 0; i < mipCount - 1; i++)
+		{
+			bloomDownsampleUniforms.tBloomTexture.value = bloomMip[i].texture;
+			renderer.setRenderTarget(bloomMip[i + 1]);
+			renderer.render(bloomDownsampleScene, orthoCamera);
+		}
+
+		// Upsample chain：mip[mipCount-1] → ... → mip[0]
+		// autoClear=false → dest mip 既有 downsample 結果被保留，GPU 把 upsample 輸出加上去
+		renderer.autoClear = false;
+		for (let i = mipCount - 1; i > 0; i--)
+		{
+			bloomUpsampleUniforms.tBloomTexture.value = bloomMip[i].texture;
+			renderer.setRenderTarget(bloomMip[i - 1]);
+			renderer.render(bloomUpsampleScene, orthoCamera);
+		}
+
+		renderer.autoClear = prevAutoClear;
 	}
 
 	// STEP 3

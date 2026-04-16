@@ -16,17 +16,31 @@ uniform sampler2D uWoodDoorTex;
 uniform sampler2D uIronDoorTex;
 uniform sampler2D u750F;
 uniform sampler2D u750B;
+uniform sampler2D uGikGrayTex;
+uniform sampler2D uGikWhiteTex;
 
 // ISO-PUCK
 uniform vec3 uPuckPositions[8];
 uniform float uPuckRadius;
 uniform float uPuckHalfH;
 
+// R2-11 中央吸頂燈
+uniform vec3 uLightEmission;
+uniform vec3 uCeilingLampPos;
+uniform float uCeilingLampRadius;
+uniform float uCeilingLampHalfH;
+
+uniform float uWallAlbedo; // R2-UI：牆/天花板/柱樑反射率（box index 1..15）
+uniform float uMaxBounces; // R2-UI：最大反彈次數 1~14，runtime 可調，硬性編譯期上限 14
+
 #define BACKDROP 5
 #define SPEAKER 6
 #define WOOD_DOOR 7
 #define IRON_DOOR 8
 #define SUBWOOFER 9
+#define ACOUSTIC_PANEL 10
+#define OUTLET 11
+#define LAMP_SHELL 12
 
 // R2-6 旋轉物件逆矩陣
 uniform mat4 uLeftSpeakerInvMatrix;
@@ -61,8 +75,6 @@ const vec3 rotColor[N_ROTATED] = vec3[N_ROTATED](
     vec3(0.08, 0.08, 0.08)        // C_STAND
 );
 
-#define N_QUADS 1
-
 vec3 rayOrigin, rayDirection;
 vec3 hitNormal, hitEmission, hitColor;
 vec3 hitBoxMin, hitBoxMax;
@@ -72,14 +84,13 @@ vec3 hitObjHalf;    // 旋轉物件的 half-size
 vec2 hitUV;
 float hitObjectID;
 int hitType = -100;
+float hitMeta;
 
 struct Quad { vec3 normal; vec3 v0; vec3 v1; vec3 v2; vec3 v3; vec3 emission; vec3 color; int type; };
 
-Quad quads[N_QUADS];
+Quad ceilingLampQuad; // R2-11 向下矩形光 importance sampling PDF 目標（不加入幾何）
 
 #include <pathtracing_random_functions>
-
-#include <pathtracing_quad_intersect>
 
 #include <pathtracing_box_intersect>
 
@@ -249,7 +260,7 @@ void fetchBVHNode(int idx, out float idPrimitive, out vec3 minC, out float idRig
 // pixel 4i+2: [min.xyz, reserved]
 // pixel 4i+3: [max.xyz, reserved]
 
-void fetchBoxData(int idx, out vec3 emission, out int type, out vec3 color, out vec3 bMin, out vec3 bMax) {
+void fetchBoxData(int idx, out vec3 emission, out int type, out vec3 color, out float meta, out vec3 bMin, out vec3 bMax) {
 	int base = idx * 4;
 	vec4 p0 = texelFetch(tBoxDataTexture, ivec2(base, 0), 0);
 	vec4 p1 = texelFetch(tBoxDataTexture, ivec2(base + 1, 0), 0);
@@ -258,6 +269,7 @@ void fetchBoxData(int idx, out vec3 emission, out int type, out vec3 color, out 
 	emission = p0.xyz;
 	type     = int(p0.w);
 	color    = p1.xyz;
+	meta     = p1.w;
 	bMin     = p2.xyz;
 	bMax     = p3.xyz;
 }
@@ -272,18 +284,7 @@ float SceneIntersect( )
 
 	hitObjectID = -INFINITY;
 
-	// 1) Quad light (always checked, not in BVH)
-	d = QuadIntersect( quads[0].v0, quads[0].v1, quads[0].v2, quads[0].v3, rayOrigin, rayDirection, FALSE );
-	if (d < t)
-	{
-		t = d;
-		hitNormal = quads[0].normal;
-		hitEmission = quads[0].emission;
-		hitColor = quads[0].color;
-		hitType = quads[0].type;
-		hitObjectID = float(objectCount);
-	}
-	objectCount++;
+	// R2-11 光源幾何由圓柱承載（見下方區塊 5），ceilingLampQuad 僅作為 importance sampling PDF 目標
 
 	// 2) BVH traversal for boxes
 	vec3 invDir = 1.0 / rayDirection;
@@ -310,7 +311,8 @@ float SceneIntersect( )
 			int boxIdx = int(idPrimitive);
 			vec3 boxEmission, boxColor, boxMin, boxMax;
 			int boxType;
-			fetchBoxData(boxIdx, boxEmission, boxType, boxColor, boxMin, boxMax);
+			float boxMeta;
+			fetchBoxData(boxIdx, boxEmission, boxType, boxColor, boxMeta, boxMin, boxMax);
 
 			d = BoxIntersect(boxMin, boxMax, rayOrigin, rayDirection, n, isRayExiting);
 			if (d < t && n != vec3(0,0,0))
@@ -319,7 +321,10 @@ float SceneIntersect( )
 				hitNormal = n;
 				hitEmission = boxEmission;
 				hitColor = boxColor;
+				// R2-UI：僅對牆/天花板/柱樑（index 1..15）套用 uWallAlbedo，地板 (index 0) 與家具、貼圖物件不受影響
+				if (boxIdx >= 1 && boxIdx <= 15) hitColor *= uWallAlbedo;
 				hitType = boxType;
+				hitMeta = boxMeta;
 				hitBoxMin = boxMin;
 				hitBoxMax = boxMax;
 				hitObjectID = float(objectCount + boxIdx);
@@ -408,13 +413,39 @@ float SceneIntersect( )
 		}
 	}
 
+	// 5) R2-11 中央吸頂燈圓柱 — 物理正確的單向光模型
+	// 底面（n.y < -0.5）= LIGHT 發光；頂面與側壁 = DIFF 白色不發光外殼
+	// 3cm 間隙不會洩漏直接光，天花板完全靠反彈受光 → 自然漸層
+	d = CylinderIntersect(uCeilingLampPos, uCeilingLampRadius, uCeilingLampHalfH, rayOrigin, rayDirection, n);
+	if (d < t)
+	{
+		t = d;
+		hitNormal = n;
+		if (n.y < -0.5)
+		{
+			// 底面 — 發光面
+			hitEmission = uLightEmission;
+			hitColor = vec3(0);
+			hitType = LIGHT;
+		}
+		else
+		{
+			// 側面 + 頂面 — LAMP_SHELL：相機視覺上發光，間接反彈走 DIFF
+			hitEmission = uLightEmission;
+			hitColor = vec3(0.9, 0.9, 0.9);
+			hitType = LAMP_SHELL;
+		}
+		hitObjectID = float(objectCount + 300);
+	}
+
 	return t;
 }
 
 
 vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float objectID, out float pixelSharpness )
 {
-    Quad light = quads[0];
+    // R2-11 用 ceilingLampQuad 做向下單向光的 importance sampling（PDF 目標，非場景幾何）
+    Quad light = ceilingLampQuad;
 
 	vec3 accumCol = vec3(0);
     vec3 mask = vec3(1);
@@ -435,8 +466,9 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 	int willNeedDiffuseBounceRay = FALSE;
 
 
-	for (int bounces = 0; bounces < 10; bounces++)
+	for (int bounces = 0; bounces < 14; bounces++)
 	{
+		if (bounces >= int(uMaxBounces)) break; // R2-UI：runtime 動態上限
 		previousIntersecType = hitType;
 
 		t = SceneIntersect();
@@ -471,7 +503,7 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 		{
 			objectID = hitObjectID;
 			// 有貼圖的表面：標記為 edge pixel，跳過降噪模糊核心
-			if (hitType == BACKDROP || hitType == SPEAKER || hitType == WOOD_DOOR || hitType == IRON_DOOR || hitType == SUBWOOFER)
+			if (hitType == BACKDROP || hitType == SPEAKER || hitType == WOOD_DOOR || hitType == IRON_DOOR || hitType == SUBWOOFER || hitType == ACOUSTIC_PANEL || hitType == OUTLET)
 				pixelSharpness = 1.0;
 		}
 
@@ -660,6 +692,136 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 			continue;
 		}
 
+		if (hitType == ACOUSTIC_PANEL)
+		{
+			// GIK 吸音板：依法向量面朝向計算 UV，hitMeta 選擇灰/白貼圖
+			vec3 aN = abs(hitNormal);
+			vec3 hp = rayOrigin + rayDirection * t;
+			vec3 ctr = (hitBoxMin + hitBoxMax) * 0.5;
+			vec3 hs = (hitBoxMax - hitBoxMin) * 0.5;
+			vec3 lp = hp - ctr;
+			vec2 uv;
+
+			if (aN.x > 0.5)
+			{
+				uv.x = (hitNormal.x > 0.0) ? (-lp.z / hs.z * 0.5 + 0.5) : (lp.z / hs.z * 0.5 + 0.5);
+				uv.y = lp.y / hs.y * 0.5 + 0.5;
+			}
+			else if (aN.y > 0.5)
+			{
+				uv.x = lp.x / hs.x * 0.5 + 0.5;
+				uv.y = -lp.z / hs.z * 0.5 + 0.5;
+			}
+			else
+			{
+				uv.x = (hitNormal.z > 0.0) ? (lp.x / hs.x * 0.5 + 0.5) : (-lp.x / hs.x * 0.5 + 0.5);
+				uv.y = lp.y / hs.y * 0.5 + 0.5;
+			}
+
+			vec3 rawTexCol;
+			if (hitMeta < 0.5)
+				rawTexCol = texture(uGikGrayTex, uv).rgb;
+			else
+				rawTexCol = texture(uGikWhiteTex, uv).rgb;
+
+			hitColor = pow(rawTexCol, vec3(2.2)) * 0.7;
+
+			diffuseCount++;
+			mask *= hitColor;
+			bounceIsSpecular = FALSE;
+			rayOrigin = x + nl * uEPS_intersect;
+			if (diffuseCount == 1)
+			{
+				diffuseBounceMask = mask;
+				diffuseBounceRayOrigin = rayOrigin;
+				diffuseBounceRayDirection = randomCosWeightedDirectionInHemisphere(nl);
+				willNeedDiffuseBounceRay = TRUE;
+			}
+			rayDirection = sampleQuadLight(x, nl, light, weight);
+			mask *= weight * 1.5;
+			sampleLight = TRUE;
+			continue;
+		}
+
+		if (hitType == OUTLET)
+		{
+			// 插座面板：白色漫射 + 物理座標插孔（參考舊專案）
+			vec3 hp = rayOrigin + rayDirection * t;
+			vec3 ctr = (hitBoxMin + hitBoxMax) * 0.5;
+			vec3 hs = (hitBoxMax - hitBoxMin) * 0.5;
+			vec3 lp = hp - ctr;
+			vec3 aN = abs(hitNormal);
+
+			// 只在正面（深度最薄軸）繪製插孔
+			bool isFront = (aN.x > 0.5 && hs.x < 0.01) ||
+			               (aN.y > 0.5 && hs.y < 0.01) ||
+			               (aN.z > 0.5 && hs.z < 0.01);
+
+			if (isFront)
+			{
+				// u = 寬度軸座標（公尺），與舊專案相同邏輯
+				float u = (hs.x > hs.z) ? lp.x : lp.z;
+				float u_r = abs(u) - 0.025;
+				bool isHole = false;
+
+				if (hs.y > 0.04) // 雙聯插座（高度 > 8cm）
+				{
+					if (lp.y > 0.0)
+						isHole = abs(u_r) < 0.008 && (abs(lp.y - 0.025 - 0.008) < 0.002 || abs(lp.y - 0.025 + 0.008) < 0.002);
+					else
+						isHole = abs(u) < 0.015 && abs(lp.y + 0.025) < 0.015;
+				}
+				else // 單聯插座
+					isHole = abs(u_r) < 0.008 && (abs(lp.y - 0.008) < 0.002 || abs(lp.y + 0.008) < 0.002);
+
+				if (isHole)
+					hitColor = vec3(0.0);
+			}
+
+			diffuseCount++;
+			mask *= hitColor;
+			bounceIsSpecular = FALSE;
+			rayOrigin = x + nl * uEPS_intersect;
+			if (diffuseCount == 1)
+			{
+				diffuseBounceMask = mask;
+				diffuseBounceRayOrigin = rayOrigin;
+				diffuseBounceRayDirection = randomCosWeightedDirectionInHemisphere(nl);
+				willNeedDiffuseBounceRay = TRUE;
+			}
+			rayDirection = sampleQuadLight(x, nl, light, weight);
+			mask *= weight * 1.5;
+			sampleLight = TRUE;
+			continue;
+		}
+
+    if (hitType == LAMP_SHELL)
+    {
+			// R2-11 燈具外殼：相機直視 / 鏡面反射看見 → 視為發光（殼整顆亮）
+			// 間接 diffuse bounce 打到 → 按 DIFF 處理（維持天花板漸層、不產生陰影）
+			if (bounceIsSpecular == TRUE)
+			{
+				accumCol = mask * hitEmission;
+				break;
+			}
+			// 以下與標準 DIFF 分支相同
+			diffuseCount++;
+			mask *= hitColor;
+			bounceIsSpecular = FALSE;
+			rayOrigin = x + nl * uEPS_intersect;
+			if (diffuseCount == 1)
+			{
+				diffuseBounceMask = mask;
+				diffuseBounceRayOrigin = rayOrigin;
+				diffuseBounceRayDirection = randomCosWeightedDirectionInHemisphere(nl);
+				willNeedDiffuseBounceRay = TRUE;
+			}
+			rayDirection = sampleQuadLight(x, nl, light, weight);
+			mask *= weight * 1.5;
+			sampleLight = TRUE;
+			continue;
+    }
+
     if (hitType == DIFF)
     {
 			diffuseCount++;
@@ -705,14 +867,17 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 void SetupScene(void)
 {
 	vec3 z = vec3(0);
-	vec3 L1 = vec3(1.0, 0.95, 0.8) * 8.0;
+	vec3 L1 = uLightEmission;
 
-	quads[0] = Quad( vec3(0.0, -1.0, 0.0),
-	                 vec3(-0.5, 2.90, -0.5),
-	                 vec3(0.5, 2.90, -0.5),
-	                 vec3(0.5, 2.90, 0.5),
-	                 vec3(-0.5, 2.90, 0.5),
-	                 L1, z, LIGHT);
+	// R2-11 中央吸頂燈 — 向下的矩形 PDF 目標（僅作為 importance sampling 用，不在 SceneIntersect 中）
+	// 可見幾何由圓柱承載，圓柱底面為 LIGHT、頂/側為 DIFF 白色外殼
+	// 矩形外接圓柱底面圓（47×47cm at y=2.835，朝下）
+	ceilingLampQuad = Quad( vec3(0.0, -1.0, 0.0),
+	                        vec3(-0.235, 2.835, 0.356),
+	                        vec3( 0.235, 2.835, 0.356),
+	                        vec3( 0.235, 2.835, 0.826),
+	                        vec3(-0.235, 2.835, 0.826),
+	                        L1, z, LIGHT);
 }
 
 

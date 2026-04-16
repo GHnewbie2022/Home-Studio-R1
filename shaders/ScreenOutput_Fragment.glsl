@@ -12,6 +12,11 @@ uniform bool uCameraIsMoving;
 uniform bool uSceneIsDynamic;
 uniform bool uUseToneMapping;
 
+// R2-UI Bloom：multi-pass 做好的 1/4 解析度 bloom 貼圖，這裡只負責 composite
+uniform sampler2D tBloomTexture;
+uniform float uBloomIntensity; // 0.0 = 關閉，1.0 = 強
+uniform float uBloomDebug;     // R2-UI: 1.0 = 直接顯示 bloom target（diagnostic）
+
 #define TRUE 1
 #define FALSE 0
 
@@ -348,6 +353,20 @@ void main()
 
 	// average accumulation buffer
 	filteredPixelColor *= uOneOverSampleCounter;
+
+	// R2-UI Bloom：multi-pass composite（1 次 bilinear fetch，上採樣 1/4 res bloom 貼圖）
+	// debug on 時直接顯示 bloom target（verify pipeline，全黑 = brightpass 砍光或 STEP 2.5 未跑）
+	if (uBloomDebug > 0.5)
+	{
+		vec2 fullResSize = vec2(textureSize(tPathTracedImageTexture, 0));
+		filteredPixelColor = texture(tBloomTexture, glFragCoord_xy / fullResSize).rgb;
+	}
+	else if (uBloomIntensity > 0.0)
+	{
+		vec2 fullResSize = vec2(textureSize(tPathTracedImageTexture, 0));
+		vec3 bloom = texture(tBloomTexture, glFragCoord_xy / fullResSize).rgb;
+		filteredPixelColor += bloom * uBloomIntensity;
+	}
 
 	// apply tone mapping (brings pixel into 0.0-1.0 rgb color range)
 	filteredPixelColor = uUseToneMapping ? ReinhardToneMapping(filteredPixelColor) : filteredPixelColor;
