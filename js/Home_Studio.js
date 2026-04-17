@@ -471,10 +471,9 @@ function initSceneData() {
         pathTracingUniforms[rotatedObjects[ri].name] = { value: new THREE.Matrix4().copy(rotatedMeshes[ri].matrixWorld).invert() };
     }
 
-    // 7) 載入窗外景色貼圖
+    // 7) 載入窗外景色貼圖（本地 1323×690，使用者手工裁切）
     const winTexLoader = new THREE.TextureLoader();
-    winTexLoader.crossOrigin = 'anonymous';
-    winTexLoader.load('https://duk.tw/WfvcAv.png', function (tex) {
+    winTexLoader.load('textures/window_scene.png', function (tex) {
         tex.minFilter = THREE.LinearFilter;
         tex.magFilter = THREE.LinearFilter;
         tex.flipY = true;

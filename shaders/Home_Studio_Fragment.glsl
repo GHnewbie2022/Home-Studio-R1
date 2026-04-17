@@ -695,6 +695,8 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 		if (hitType == ACOUSTIC_PANEL)
 		{
 			// GIK 吸音板：依法向量面朝向計算 UV，hitMeta 選擇灰/白貼圖
+			// R2-LOGO-FIX：偵測薄軸，側面沿薄軸方向改取正面貼圖的中央細條
+			//   （維持正面紋理密度，避免側面把整張貼圖含 LOGO 拉伸覆蓋）
 			vec3 aN = abs(hitNormal);
 			vec3 hp = rayOrigin + rayDirection * t;
 			vec3 ctr = (hitBoxMin + hitBoxMax) * 0.5;
@@ -702,20 +704,39 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 			vec3 lp = hp - ctr;
 			vec2 uv;
 
+			float minHS = min(hs.x, min(hs.y, hs.z));
+			bool thinIsX = (hs.x <= minHS + 1e-5);
+			bool thinIsY = (hs.y <= minHS + 1e-5);
+			bool thinIsZ = (hs.z <= minHS + 1e-5);
+			// 正面以非薄軸中較長者為紋理密度基準
+			float maxFront = thinIsX ? max(hs.y, hs.z) : (thinIsY ? max(hs.x, hs.z) : max(hs.x, hs.y));
+			float thinDenom = 2.0 * maxFront; // 薄軸 UV 以此為分母 → 正面同密度
+
 			if (aN.x > 0.5)
 			{
-				uv.x = (hitNormal.x > 0.0) ? (-lp.z / hs.z * 0.5 + 0.5) : (lp.z / hs.z * 0.5 + 0.5);
-				uv.y = lp.y / hs.y * 0.5 + 0.5;
+				// 法向沿 X：uv.x 對應 Z 軸，uv.y 對應 Y 軸
+				float uxDen = thinIsZ ? thinDenom : (2.0 * hs.z);
+				float uyDen = thinIsY ? thinDenom : (2.0 * hs.y);
+				float uxSign = (hitNormal.x > 0.0) ? -1.0 : 1.0;
+				uv.x = 0.5 + uxSign * lp.z / uxDen;
+				uv.y = 0.5 + lp.y / uyDen;
 			}
 			else if (aN.y > 0.5)
 			{
-				uv.x = lp.x / hs.x * 0.5 + 0.5;
-				uv.y = -lp.z / hs.z * 0.5 + 0.5;
+				// 法向沿 Y：uv.x 對應 X 軸，uv.y 對應 Z 軸（反向）
+				float uxDen = thinIsX ? thinDenom : (2.0 * hs.x);
+				float uyDen = thinIsZ ? thinDenom : (2.0 * hs.z);
+				uv.x = 0.5 + lp.x / uxDen;
+				uv.y = 0.5 + (-lp.z) / uyDen;
 			}
 			else
 			{
-				uv.x = (hitNormal.z > 0.0) ? (lp.x / hs.x * 0.5 + 0.5) : (-lp.x / hs.x * 0.5 + 0.5);
-				uv.y = lp.y / hs.y * 0.5 + 0.5;
+				// 法向沿 Z：uv.x 對應 X 軸，uv.y 對應 Y 軸
+				float uxDen = thinIsX ? thinDenom : (2.0 * hs.x);
+				float uyDen = thinIsY ? thinDenom : (2.0 * hs.y);
+				float uxSign = (hitNormal.z > 0.0) ? 1.0 : -1.0;
+				uv.x = 0.5 + uxSign * lp.x / uxDen;
+				uv.y = 0.5 + lp.y / uyDen;
 			}
 
 			vec3 rawTexCol;
