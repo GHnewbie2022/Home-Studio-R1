@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Claude Code workspace
+.claude/
+
+# Local backups (use git branches/tags instead)
+*.bak
+*.bak-*
+*.backup
+*.orig
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
