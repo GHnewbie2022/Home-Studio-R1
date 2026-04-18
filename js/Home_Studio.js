@@ -330,6 +330,12 @@ function applyPanelConfig(config) {
     needClearAccumulation = true;
     cameraIsMoving = true;
     cameraSwitchFrames = 3; // 讓 updateVariablesAndUniforms 持續 3 幀重置累積緩衝區
+    // R3-1 fix01：computeLightEmissions() 原本掛於此（供 R3-3 dirty-flag 鉤點），
+    // 但 applyPanelConfig(1) 在 initSceneData 中段（L655）即被呼叫，
+    // 此時 uCloudEmission 等 uniform 尚未宣告（L856~859），
+    // 呼叫會拋 TypeError 中斷初始化 → GUI 消失、canvas 全黑。
+    // 故 R3-1 只保留 initSceneData L894 uniform 宣告後的單次呼叫，
+    // R3-3 接手時再於此處重建 Config 切換 dirty-flag 鉤點。
 }
 
 // R2-6 旋轉物件定義（center, halfSize, rotY, color）
@@ -363,6 +369,55 @@ let basicBrightness = 900.0;
 let trackLightState = null, trackLightCtrl = null;
 let wideTrackLightState = null, wideTrackLightCtrl = null;
 let colorTemperature = 4000;
+
+// ---------------- R3-1 Photometry Pipeline ----------------
+/**
+ * Luminous flux (lm) + FULL beam angle (deg, 邊到邊全錐角) → peak axial candela.
+ *
+ * 警示：第二參數為「全錐角」，非半角。
+ * 內部自除 2：sr = 2π(1 - cos(fullBeamAngleDeg/2 · π/180))。
+ * 若改為半角語義，§6.a 斷言三組期望值（2375.90 / 37206.86 / 636.62）必須整組重算。
+ * 舊專案 Path Tracking 260412a 5.4 Clarity.html:1752 原型（同全錐角語義）。
+ */
+function lumenToCandela(lm, fullBeamAngleDeg) {
+    const halfDeg = Math.max(0.01, fullBeamAngleDeg / 2);
+    const halfRad = halfDeg * Math.PI / 180;
+    return lm / (2 * Math.PI * (1 - Math.cos(halfRad)));
+}
+
+/**
+ * Candela + emitter surface area (m²) → radiance proxy (cd/m²).
+ * 注意：此為中繼量，R3-3/4 時須再乘以 (1/π) 補 Lambertian 因子，否則過亮 3.14×。
+ * 本階段 R3-1 不直接使用，留予 R3-3/4 承接。
+ */
+function candelaToRadiance(cd, emitterAreaM2) {
+    if (!Number.isFinite(cd)) return 0;
+    const A = Math.max(emitterAreaM2, 1e-8);
+    return cd / A;
+}
+
+/**
+ * Luminous flux (lm) + color temperature (K) → electrical watts proxy.
+ * 採查表 K(T) lm/W；R3-5 MIS 歸一時若需 radiant flux 可再乘 683 轉 W。
+ */
+function lumensToWatts(lm, kelvin) {
+    return lm / kelvinToLuminousEfficacy(kelvin);
+}
+
+/**
+ * Luminous efficacy K(T) lm/W，階梯式 LUT。
+ * 資料來源：CIE 15:2004 Table T.3 / Philips LED 商品 spec 平均值。
+ */
+function kelvinToLuminousEfficacy(kelvin) {
+    if (kelvin <= 2700) return 280;
+    if (kelvin <= 3000) return 300;
+    if (kelvin <= 4000) return 320;
+    if (kelvin <= 5000) return 330;
+    if (kelvin <= 6500) return 340;
+    return 350;
+}
+// ---------------- /R3-1 Photometry Pipeline ----------------
+
 let wallAlbedo = 1.0;
 
 // acousticPanelVisibility 已被 R2-8 Config 1/Config 2 切換取代
@@ -802,6 +857,12 @@ function initSceneData() {
     // R3-0：legacy gain（shader 10 處 weight × magic 魔數抽離為 uniform，預設 1.5 維持 R2-18 亮度）
     pathTracingUniforms.uLegacyGain = { value: 1.5 };
 
+    // ---- R3-1 emission pipeline (values stay zero this phase) ----
+    pathTracingUniforms.uCloudEmission      = { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] };
+    pathTracingUniforms.uTrackEmission      = { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] };
+    pathTracingUniforms.uTrackWideEmission  = { value: [new THREE.Vector3(), new THREE.Vector3()] };
+    pathTracingUniforms.uR3EmissionGate     = { value: 0.0 };   // runtime 0，防 GLSL DCE
+
     // R2-14 fix02：4 盞圓柱燈頭靜態 uniforms（R3/R4 階段改為 UI 動態更新）
     // pivot = 支架底（y_pivot = trackBaseY - 0.076 = 2.819）；tilt=45° 由軌道中心朝外傾
     // 順序 NW, NE, SW, SE；NW/NE 對正北側牆吸音板 E1/W1，SW/SE 對正南側 E3/W3
@@ -835,8 +896,21 @@ function initSceneData() {
         new THREE.Vector3(0, -_wideCos,  _wideSin)  // 北燈向南（房中）傾
     ] };
 
+    computeLightEmissions();
+
     if (mouseControl) {
         setupGUI();
+    }
+}
+
+function computeLightEmissions() {
+    // R3-1: pipeline only — R3-3/4/5 will fill real values.
+    for (let i = 0; i < 4; i++) {
+        pathTracingUniforms.uCloudEmission.value[i].set(0, 0, 0);
+        pathTracingUniforms.uTrackEmission.value[i].set(0, 0, 0);
+    }
+    for (let i = 0; i < 2; i++) {
+        pathTracingUniforms.uTrackWideEmission.value[i].set(0, 0, 0);
     }
 }
 
@@ -972,12 +1046,16 @@ function setupGUI() {
         basicBrightness = value;
         wakeRender();
     });
+    brightnessCtrl.disable();
+    brightnessCtrl.name('brightness (R3-6 校準)');
     attachMetaClickReset(brightnessCtrl, 900);
 
     const colorTempCtrl = lightFolder.add({ colorTemp: 4000 }, 'colorTemp', 2700, 6500, 100).onChange(function (value) {
         colorTemperature = value;
         wakeRender();
     });
+    colorTempCtrl.disable();
+    colorTempCtrl.name('colorTemp (R3-6 校準)');
     attachMetaClickReset(colorTempCtrl, 4000);
 
     // R2-UI：最大反彈次數（1~14，預設 4），shader 內動態 break 控制實際 bounce 數

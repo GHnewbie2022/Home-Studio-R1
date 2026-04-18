@@ -73,6 +73,10 @@ uniform float uIndirectMultiplier;
 
 // R3-0：legacy gain（10 處 mask *= weight × magic 魔數集中管理；預設 1.5 維持 R2-18 亮度，為 R3-5 MIS 歸一做準備）
 uniform float uLegacyGain;
+uniform vec3 uCloudEmission[4];
+uniform vec3 uTrackEmission[4];
+uniform vec3 uTrackWideEmission[2];
+uniform float uR3EmissionGate;   // runtime 0，防止 GLSL DCE 把 emission uniform 移除
 
 // R2-14 投射燈頭（4 盞傾斜圓柱；pivot 位於支架底，半徑 3cm、長 13.5cm；與 uTrackLightEnabled 共開關）
 uniform vec3 uTrackLampPos[4];
@@ -1273,6 +1277,14 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 
 	}
 
+	// R3-1 DCE-proof sink: gate=0 時 r3Sink=vec3(0)，畫面不變；
+	// R3-3/4/5 將 uR3EmissionGate 改為 1 並填 emission 值即可點亮。
+	vec3 r3Sink = uR3EmissionGate * (
+		uCloudEmission[0] + uCloudEmission[1] + uCloudEmission[2] + uCloudEmission[3] +
+		uTrackEmission[0] + uTrackEmission[1] + uTrackEmission[2] + uTrackEmission[3] +
+		uTrackWideEmission[0] + uTrackWideEmission[1]
+	);
+	accumCol += r3Sink;
 	return max(vec3(0), accumCol);
 
 }

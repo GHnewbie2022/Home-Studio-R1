@@ -732,3 +732,58 @@ if (rand() < hitMetalness) {
 
 ### 驗證結果（使用者確認通過）
 金屬三類（IRON_DOOR、C_STAND、C_STAND_PILLAR）於 Cam 1~3 觀察 metalness 0.0→0.3→0.65→1.0 呈連續反射強度遞增，無硬邊。對應 feedback memory：`feedback_pathtracing_metal_rand_branch.md`。
+
+---
+
+## R3-1 fix01｜computeLightEmissions 呼叫早於 uniform 宣告（初始化 TypeError）
+
+### 症狀
+R3-1 管線施工完成（四支光度學函式 + 三組 emission uniform 陣列 + `uR3EmissionGate` gate + GUI slider disable + HTML cache-buster），以 `?v=r3-1-lumens-uniform-pipeline` 載入後：
+- Canvas 全黑
+- `Scene Setup` / `Light Settings` / `Bloom` / `Snapshot` 四個 GUI folder 全消失
+- `samples_per_frame` 裸 slider 亦缺
+- 唯一倖存的是 `pixel_Resolution`（由 `InitCommon.js` 較早掛載）
+- FPS 指示區塊無數字
+
+### 根本原因
+計畫書 `.omc/plans/r3-1-lumens-radiance.md` §6 Step 3 指示在 `applyPanelConfig(config)` 尾端與 `initSceneData()` 尾端各呼叫一次 `computeLightEmissions()`（為 R3-3 dirty-flag 預留鉤點）。但：
+
+1. `initSceneData()` 於 `js/Home_Studio.js` L607 起、L655 呼叫 `applyPanelConfig(1)` 設初始 Config。
+2. `applyPanelConfig(config)` 末端 L333 即呼叫 `computeLightEmissions()`。
+3. `computeLightEmissions()` 於 L904 存取 `pathTracingUniforms.uCloudEmission.value[i].set(...)`。
+4. 但 `uCloudEmission` 宣告位於 L856（在 `initSceneData` L655 呼叫點之後 200 多行）—— 此時尚未被建立。
+5. 故 `pathTracingUniforms.uCloudEmission` 為 `undefined`，`.value[i].set()` 拋 `TypeError: Cannot read properties of undefined (reading 'value')`。
+6. `initSceneData` 於 L655 中斷，後續 uniform 宣告（L840~892）、`setupGUI()`（L897）全未執行 → GUI 消失、animate loop 未啟動、canvas 全黑。
+
+既有既存 code 其他 uniform 操作（如 `uCloudPanelEnabled` / `uTrackLightEnabled`）都用 `if (pathTracingUniforms && pathTracingUniforms.uCloudPanelEnabled)` 防禦式判斷（L304/307/310/313），`computeLightEmissions()` 是**唯一**裸呼叫，故崩。
+
+### 修法（方案 B：架構修正，非 guard 補丁）
+移除 `applyPanelConfig` L333 的 `computeLightEmissions()` 呼叫，只保留 `initSceneData` L894 uniform 宣告後的單次呼叫。該處以註解保留 R3-3 鉤點位置備忘：
+
+```javascript
+cameraSwitchFrames = 3;
+// R3-1 fix01：computeLightEmissions() 原本掛於此（供 R3-3 dirty-flag 鉤點），
+// 但 applyPanelConfig(1) 在 initSceneData 中段（L655）即被呼叫，
+// 此時 uCloudEmission 等 uniform 尚未宣告（L856~859），
+// 呼叫會拋 TypeError 中斷初始化 → GUI 消失、canvas 全黑。
+// 故 R3-1 只保留 initSceneData L894 uniform 宣告後的單次呼叫，
+// R3-3 接手時再於此處重建 Config 切換 dirty-flag 鉤點。
+```
+
+cache-buster 從 `r3-1-lumens-uniform-pipeline` bump 為 `r3-1-fix01-guard-ordering`。
+
+### 診斷過程關鍵步驟
+1. **對稱性分析**：GUI 只剩 `pixel_Resolution` 倖存 → InitCommon.js 完成、Home_Studio.js 中斷。排除 shader 編譯 fail（那樣 GUI 完整、僅 canvas 黑）。
+2. **Read 施工位置**：`js/Home_Studio.js` L355~420（新函式 scope 確認頂層宣告，排除 SyntaxError 假說）、L840~910（uniform 宣告 + computeLightEmissions 定義）、L275~335（applyPanelConfig body）。
+3. **Grep 呼叫點**：整檔 `computeLightEmissions` 共 2 個呼叫（L333 applyPanelConfig、L894 initSceneData）+ 1 個定義（L901）。
+4. **時序推導**：`initSceneData` L655 呼叫 `applyPanelConfig(1)` → L333 `computeLightEmissions()` → L856 宣告尚未到達 → TypeError。
+5. **症狀對帳**：canvas 全黑 / GUI 大部分消失 / FPS 無值，全部符合「initSceneData 於 L655 中斷」之單一假說。
+6. 未跑 DevTools Console cross-check，因檔內證據鏈已 100% 閉合，使用者肉眼驗收 fix01 像素級回復 R3-0 基線即完成裁決。
+
+### 教訓（跨 R 階段通用）
+**uniform 宣告與使用的時序不可倒置；規劃 dirty-flag 鉤點時須 trace 呼叫鏈是否跨越宣告點**。本案計畫書 §6 Step 3 犯的結構性錯是「把鉤點掛在中途會被呼叫的函式尾端」，而該函式在 `initSceneData` 中段即被觸發，天然早於 uniform 宣告。規劃階段若 trace `applyPanelConfig` 的既有呼叫點（L655 于 initSceneData 內），即可在 ralplan Critic 階段被攔截。
+
+**類比 R2-3 bug #3**（type=10 在 CalculateRadiance 無分支，射線直接回傳黑）：兩者本質皆「使用點存在、但被使用的實體尚未就位」。R2-3 是 shader side、R3-1 是 JS side，同一類時序缺陷。
+
+### 驗證結果（使用者確認通過）
+cache-buster `r3-1-fix01-guard-ordering` 載入後使用者回報「有畫面了，跟 R2 做完一樣」。emission=0 + gate=0 雙重保險達成「像素級一致 R3-0 基線」之 R3-1 驗收門檻。
