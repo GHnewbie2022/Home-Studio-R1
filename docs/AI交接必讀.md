@@ -96,6 +96,41 @@ query 有變：不必提重整
 query 未變：附「Cmd+Shift+R 硬重載」於次行（分行，勿串句）
 ```
 
+### 六、R3 階段 × OMC 工具對照
+
+動手前依階段性質選用對應工具，勿全程套同一 skill：
+
+```
+R3-0  抽離魔數 weight * 1.5
+      單檔、單處常數改 uniform
+      → 直接動工，勿套 skill
+
+R3-1  光通量 lm → radiance 換算層
+R3-2  色溫 K → RGB 換算
+      數學函式、有標準公式、邊界敏感
+      → /oh-my-claudecode:ralplan 事前取共識
+         （Planner+Architect+Critic 三角互審）
+
+R3-3  Cloud 漫射燈條接真光源
+R3-4  軌道投射燈 spot cone NEE
+R3-5  Many-Light Sampling + MIS（最高難度）
+      shader+JS 雙線改、erichlof 框架踩雷多
+      → /ralplan 先出計畫 → /ultrawork 執行
+         R3-5 若反覆翻車可改 /ralph 持續循環
+
+R3-6  indirectMul 校準歸一
+      數值調參、肉眼驗收
+      → Claude Code 直接動手、每次給對照圖
+
+R3-7  採購評估驗收（4 情境切換）
+      非編碼、使用者親自測
+      → Claude Code 僅負責修 bug
+```
+
+注意：`/team` 不適用 R3。各階段有依賴鏈（單位換算 → 光源 → MIS），併行不安全。`/team` 適合大量獨立檔案重構。
+
+通用任務選用規則另見全域 CLAUDE.md「任務 × OMC 工具選用提醒」。
+
 ---
 
 ## 文件邊界（避免重複）
