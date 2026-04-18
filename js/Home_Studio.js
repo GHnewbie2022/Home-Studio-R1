@@ -24,12 +24,14 @@ const C_STAND = [0.08, 0.08, 0.08];
 const C_STAND_PILLAR = [0.80, 0.82, 0.85];
 const C_SPIKE = [0.75, 0.60, 0.15];
 const C_GIK = [0.50, 0.50, 0.50];
+const C_CLOUD_LIGHT = [0.9, 0.9, 0.9]; // R2-17 Cloud 漫射燈條；emission=0 視覺幾何，真光源留 R3
 const C_DARK_VENT = [0.0, 0.0, 0.0];
 
 // === Scene Box Data (single source of truth) ===
 const sceneBoxes = [];
 const z3 = [0, 0, 0]; // zero emission shorthand
-// R2-14：第八參數 fixtureGroup 為「可切換裝置」分群標識（0 = 恆顯，1 = R2-14 東西投射燈軌道，2 = R2-15 南北廣角燈軌道）
+// R2-14：第八參數 fixtureGroup 為「可切換裝置」分群標識
+// 0 = 恆顯、1 = R2-14 東西投射燈軌道、2 = R2-15 南北廣角燈軌道、3 = R2-16 Cloud 吸音板、4 = R2-17 Cloud 漫射燈條
 // 預留為 R2-16/17 各階段之開關鎖鍊；值對應 shader 中 uTrackLightEnabled / uWideTrackLightEnabled 等 uniform 的 gating
 function addBox(min, max, emission, color, type, meta, cullable, fixtureGroup) {
     sceneBoxes.push({ min, max, emission, color, type, meta: meta || 0, cullable: cullable || 0, fixtureGroup: fixtureGroup || 0 });
@@ -141,8 +143,16 @@ addBox([-0.9, 2.669,  0.498], [-0.3, 2.787, 1.698], z3, C_GIK, 10, 1, 1, 3);  //
 addBox([-0.3, 2.669,  0.498], [ 0.3, 2.787, 1.698], z3, C_GIK, 10, 1, 1, 3);  // 53 Cloud C5 南中
 addBox([ 0.3, 2.669,  0.498], [ 0.9, 2.787, 1.698], z3, C_GIK, 10, 1, 1, 3);  // 54 Cloud C6 南東
 
+// R2-17 Cloud 漫射燈條（4 支矩形長柱，type 14 CLOUD_LIGHT，emission=0 視覺幾何；真光源留 R3）
+// 真實可見幾何依舊專案 line 514-515 type 9：1.6cm × 1.6cm × 240cm（非 SOP 誤抄之採樣體積 15×5cm）
+// y 中心 2.795（底 2.787 貼死 Cloud 頂、頂 2.803）；fixtureGroup=4 受 uCloudLightEnabled 切換；cullable=1 隨 Cloud 板頂向剝離
+addBox([ 0.884, 2.787, -0.702], [ 0.900, 2.803, 1.698], z3, C_CLOUD_LIGHT, 14, 0, 1, 4);  // 55 東燈條（沿 z 2.4m；舊專案 c=[0.892, 2.795, 0.498] s=[0.016, 0.016, 2.4]）
+addBox([-0.900, 2.787, -0.702], [-0.884, 2.803, 1.698], z3, C_CLOUD_LIGHT, 14, 0, 1, 4);  // 56 西燈條
+addBox([-0.884, 2.787,  1.682], [ 0.884, 2.803, 1.698], z3, C_CLOUD_LIGHT, 14, 0, 1, 4);  // 57 南燈條（沿 x 1.768m；比照東西短軸 1.6cm）
+addBox([-0.884, 2.787, -0.702], [ 0.884, 2.803, -0.686], z3, C_CLOUD_LIGHT, 14, 0, 1, 4); // 58 北燈條
+
 // R2-8 吸音板
-const BASE_BOX_COUNT = 71; // R2-14 八 + R2-15 四 + R2-16 六：base 53 + 12 + 6 = 71
+const BASE_BOX_COUNT = 75; // base 53 + R2-14 八 + R2-15 四 + R2-16 六 + R2-17 四 = 75
 
 // Config 1：3 片灰色（第一反射點）
 const panelConfig1 = [
@@ -696,6 +706,9 @@ function initSceneData() {
     // R2-16 Cloud 吸音板（fixtureGroup=3）開關；預設開，吸頂燈同步北移避開 Cloud 遮擋
     pathTracingUniforms.uCloudPanelEnabled = { value: 1.0 };
 
+    // R2-17 Cloud 漫射燈條（fixtureGroup=4）開關；預設開；emission=0 僅視覺幾何
+    pathTracingUniforms.uCloudLightEnabled = { value: 1.0 };
+
     // R2-14 fix02：4 盞圓柱燈頭靜態 uniforms（R3/R4 階段改為 UI 動態更新）
     // pivot = 支架底（y_pivot = trackBaseY - 0.076 = 2.819）；tilt=45° 由軌道中心朝外傾
     // 順序 NW, NE, SW, SE；NW/NE 對正北側牆吸音板 E1/W1，SW/SE 對正南側 E3/W3
@@ -854,6 +867,14 @@ function setupGUI() {
         // 吸頂燈聯動：ON → 北移 z=-1.5（越過 R2-15 北軌道，避開 Cloud 與軌道卡位）；OFF → 回房間中央 z=0.591
         if (pathTracingUniforms && pathTracingUniforms.uCeilingLampPos) {
             pathTracingUniforms.uCeilingLampPos.value.z = value ? -1.5 : 0.591;
+        }
+        wakeRender();
+    });
+
+    // R2-17 Cloud 漫射燈條 toggle（fixtureGroup=4）；獨立開關，不聯動吸頂燈
+    cameraFolder.add({ cloudLight: true }, 'cloudLight').name('Cloud 燈條 (4支)').onChange(function (value) {
+        if (pathTracingUniforms && pathTracingUniforms.uCloudLightEnabled) {
+            pathTracingUniforms.uCloudLightEnabled.value = value ? 1.0 : 0.0;
         }
         wakeRender();
     });

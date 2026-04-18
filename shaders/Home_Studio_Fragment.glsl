@@ -50,6 +50,9 @@ uniform float uWideTrackLightEnabled; // 0.0 = off, 1.0 = on
 // R2-16 Cloud 吸音板（fixtureGroup=3）開關；關閉時 6 片 box 於 shader 層整體跳過，吸頂燈位置 JS 端聯動
 uniform float uCloudPanelEnabled; // 0.0 = off, 1.0 = on
 
+// R2-17 Cloud 漫射燈條（fixtureGroup=4）開關；4 支矩形長柱 emission=0 視覺幾何，真光源留 R3
+uniform float uCloudLightEnabled; // 0.0 = off, 1.0 = on
+
 // R2-14 投射燈頭（4 盞傾斜圓柱；pivot 位於支架底，半徑 3cm、長 13.5cm；與 uTrackLightEnabled 共開關）
 uniform vec3 uTrackLampPos[4];
 uniform vec3 uTrackLampDir[4];
@@ -70,6 +73,7 @@ int primaryRay = 1; // 僅 bounces==0 為 1，其餘為 0
 #define OUTLET 11
 #define LAMP_SHELL 12
 #define TRACK 13
+#define CLOUD_LIGHT 14 // R2-17 Cloud 漫射燈條（emission=0 視覺幾何，behavior 同 DIFF）
 
 // R2-6 旋轉物件逆矩陣
 uniform mat4 uLeftSpeakerInvMatrix;
@@ -343,6 +347,7 @@ bool isFixtureDisabled(float fixtureGroup)
 	if (fixtureGroup < 1.5) return uTrackLightEnabled < 0.5; // R2-14 群組 1
 	if (fixtureGroup < 2.5) return uWideTrackLightEnabled < 0.5; // R2-15 群組 2
 	if (fixtureGroup < 3.5) return uCloudPanelEnabled < 0.5; // R2-16 群組 3 Cloud 吸音板
+	if (fixtureGroup < 4.5) return uCloudLightEnabled < 0.5; // R2-17 群組 4 Cloud 漫射燈條
 	return false;
 }
 
@@ -1032,6 +1037,26 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 				break;
 			}
 			// 以下與標準 DIFF 分支相同
+			diffuseCount++;
+			mask *= hitColor;
+			bounceIsSpecular = FALSE;
+			rayOrigin = x + nl * uEPS_intersect;
+			if (diffuseCount == 1)
+			{
+				diffuseBounceMask = mask;
+				diffuseBounceRayOrigin = rayOrigin;
+				diffuseBounceRayDirection = randomCosWeightedDirectionInHemisphere(nl);
+				willNeedDiffuseBounceRay = TRUE;
+			}
+			rayDirection = sampleQuadLight(x, nl, light, weight);
+			mask *= weight * 1.5;
+			sampleLight = TRUE;
+			continue;
+    }
+
+    if (hitType == CLOUD_LIGHT)
+    {
+			// R2-17 Cloud 漫射燈條：emission=0 視覺幾何，行為同純 DIFF；真光源（lumens / lightNormal / MIS）留 R3
 			diffuseCount++;
 			mask *= hitColor;
 			bounceIsSpecular = FALSE;
