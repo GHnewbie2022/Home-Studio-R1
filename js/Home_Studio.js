@@ -868,6 +868,8 @@ function setupGUI() {
         if (pathTracingUniforms && pathTracingUniforms.uCeilingLampPos) {
             pathTracingUniforms.uCeilingLampPos.value.z = value ? -1.5 : 0.591;
         }
+        // 吸頂燈位置大幅位移會留前位殘影，比照 Cam 切換（R2-11 Debug_Log）瞬清兩個 render target
+        needClearAccumulation = true;
         wakeRender();
     });
 
