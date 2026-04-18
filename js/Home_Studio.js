@@ -29,8 +29,10 @@ const C_DARK_VENT = [0.0, 0.0, 0.0];
 // === Scene Box Data (single source of truth) ===
 const sceneBoxes = [];
 const z3 = [0, 0, 0]; // zero emission shorthand
-function addBox(min, max, emission, color, type, meta, cullable) {
-    sceneBoxes.push({ min, max, emission, color, type, meta: meta || 0, cullable: cullable || 0 });
+// R2-14：第八參數 fixtureGroup 為「可切換裝置」分群標識（0 = 恆顯，1 = R2-14 東西投射燈軌道）
+// 預留為 R2-15/16/17 各階段之開關鎖鍊；值對應 shader 中 uTrackLightEnabled 等 uniform 的 gating
+function addBox(min, max, emission, color, type, meta, cullable, fixtureGroup) {
+    sceneBoxes.push({ min, max, emission, color, type, meta: meta || 0, cullable: cullable || 0, fixtureGroup: fixtureGroup || 0 });
 }
 
 // R2-3 牆面 (fix10：地面/天花板 9 片化、四角牆裂)
@@ -106,8 +108,22 @@ addBox([1.01, 0.355, 2.906], [1.02, 0.475, 3.026], z3, C_WHITE, 11, 0, 1);      
 addBox([0.83, 2.425, 2.681], [1.7, 2.725, 3.056], z3, C_WHITE, 1, 0, 1);      // 35 冷氣主體（fix23：bmax.z 由 3.181 縮至 3.056 消除卡進南牆 12.5cm，機身深度由 50cm 縮為 37.5cm）
 addBox([0.91, 2.425, 2.681], [1.62, 2.455, 2.9], z3, C_DARK_VENT, 1, 0, 1);  // 36 冷氣出風口
 
+// R2-14 東西側投射燈軌道（type 13 = TRACK，R2-14 真修後與插座 OUTLET=11 分家；fixtureGroup=1 受 uTrackLightEnabled 切換顯隱；陣列索引 37..44）
+// 規格（fix02 對位舊專案甜蜜點）：x=±0.95（trackBaseX）、軌道頂 y=2.895、s 為 FULL size
+// 底座：s=(0.035, 0.02, 1.0) → half=(0.0175, 0.01, 0.5)；z 非對稱 (0.998, -0.002) 組成 -0.502..1.498 之 2m 軌道
+addBox([-0.9675, 2.885,  0.498], [-0.9325, 2.905, 1.498], z3, C_WHITE, 13, 0, 0, 1);  // 37 西軌底座北半
+addBox([-0.9675, 2.885, -0.502], [-0.9325, 2.905, 0.498], z3, C_WHITE, 13, 0, 0, 1);  // 38 西軌底座南半
+addBox([ 0.9325, 2.885,  0.498], [ 0.9675, 2.905, 1.498], z3, C_WHITE, 13, 0, 0, 1);  // 39 東軌底座北半
+addBox([ 0.9325, 2.885, -0.502], [ 0.9675, 2.905, 0.498], z3, C_WHITE, 13, 0, 0, 1);  // 40 東軌底座南半
+// 支架：s=(0.02, 0.065, 0.02) → half=(0.01, 0.0325, 0.01)；standY=trackBaseY-0.0435=2.8515
+// 預設 trackSpacing=150cm → z=z_mid±d/2=0.498±0.75；z_N=-0.252（對正側牆北片 E1/W1），z_S=1.248（對正南片 E3/W3）
+addBox([-0.96, 2.819, -0.262], [-0.94, 2.884, -0.242], z3, C_WHITE, 13, 0, 0, 1);  // 41 NW 支架
+addBox([ 0.94, 2.819, -0.262], [ 0.96, 2.884, -0.242], z3, C_WHITE, 13, 0, 0, 1);  // 42 NE 支架
+addBox([-0.96, 2.819,  1.238], [-0.94, 2.884,  1.258], z3, C_WHITE, 13, 0, 0, 1);  // 43 SW 支架
+addBox([ 0.94, 2.819,  1.238], [ 0.96, 2.884,  1.258], z3, C_WHITE, 13, 0, 0, 1);  // 44 SE 支架
+
 // R2-8 吸音板
-const BASE_BOX_COUNT = 53; // fix14：地面/天花板 併 N/S edge 入 Center，由 9 片降為 7 片，基礎 box 57 → 53
+const BASE_BOX_COUNT = 61; // R2-14：base 53 + 8 個投射燈軌道/支架 = 61
 
 // Config 1：3 片灰色（第一反射點）
 const panelConfig1 = [
@@ -186,7 +202,7 @@ function buildSceneBVH() {
         boxArr[(p + 2) * 4 + 0] = b.min[0]; boxArr[(p + 2) * 4 + 1] = b.min[1];
         boxArr[(p + 2) * 4 + 2] = b.min[2]; boxArr[(p + 2) * 4 + 3] = b.cullable || 0;
         boxArr[(p + 3) * 4 + 0] = b.max[0]; boxArr[(p + 3) * 4 + 1] = b.max[1];
-        boxArr[(p + 3) * 4 + 2] = b.max[2]; boxArr[(p + 3) * 4 + 3] = 0.0;
+        boxArr[(p + 3) * 4 + 2] = b.max[2]; boxArr[(p + 3) * 4 + 3] = b.fixtureGroup || 0; // R2-14：裝置開關分群
     }
     var boxDataTexture = new THREE.DataTexture(boxArr, BVH_TEX_W, 1, THREE.RGBAFormat, THREE.FloatType);
     boxDataTexture.wrapS = THREE.ClampToEdgeWrapping;
@@ -650,6 +666,28 @@ function initSceneData() {
     pathTracingUniforms.uCullEpsilon = { value: 0.01 };
     pathTracingUniforms.uXrayEnabled = { value: 1.0 };
 
+    // R2-14 東西投射燈軌道（fixtureGroup=1）開關；預設開
+    pathTracingUniforms.uTrackLightEnabled = { value: 1.0 };
+
+    // R2-14 fix02：4 盞圓柱燈頭靜態 uniforms（R3/R4 階段改為 UI 動態更新）
+    // pivot = 支架底（y_pivot = trackBaseY - 0.076 = 2.819）；tilt=45° 由軌道中心朝外傾
+    // 順序 NW, NE, SW, SE；NW/NE 對正北側牆吸音板 E1/W1，SW/SE 對正南側 E3/W3
+    // 傾斜向量 dir = (signX * sin(45°), -cos(45°), 0)，signX=-1 為 W 軌、+1 為 E 軌
+    var _lampSin = Math.sin(Math.PI / 4);
+    var _lampCos = Math.cos(Math.PI / 4);
+    pathTracingUniforms.uTrackLampPos = { value: [
+        new THREE.Vector3(-0.95, 2.819, -0.252), // NW
+        new THREE.Vector3( 0.95, 2.819, -0.252), // NE
+        new THREE.Vector3(-0.95, 2.819,  1.248), // SW
+        new THREE.Vector3( 0.95, 2.819,  1.248)  // SE
+    ] };
+    pathTracingUniforms.uTrackLampDir = { value: [
+        new THREE.Vector3(-_lampSin, -_lampCos, 0), // NW: 向西外傾
+        new THREE.Vector3( _lampSin, -_lampCos, 0), // NE: 向東外傾
+        new THREE.Vector3(-_lampSin, -_lampCos, 0), // SW
+        new THREE.Vector3( _lampSin, -_lampCos, 0)  // SE
+    ] };
+
     if (mouseControl) {
         setupGUI();
     }
@@ -747,6 +785,15 @@ function setupGUI() {
             pathTracingUniforms.uXrayEnabled.value = value ? 1.0 : 0.0;
         }
         console.log('[X-ray] onChange fired, value =', value, '→ uXrayEnabled =', value ? 1.0 : 0.0);
+        wakeRender();
+    });
+
+    // R2-14 東西投射燈軌道 toggle（fixtureGroup=1）：關閉時 8 個 box 於 shader 層整體跳過，連帶無陰影
+    cameraFolder.add({ trackLight: true }, 'trackLight').name('投射燈軌道 (東西)').onChange(function (value) {
+        if (pathTracingUniforms && pathTracingUniforms.uTrackLightEnabled) {
+            pathTracingUniforms.uTrackLightEnabled.value = value ? 1.0 : 0.0;
+        }
+        console.log('[TrackLight] onChange fired, value =', value, '→ uTrackLightEnabled =', value ? 1.0 : 0.0);
         wakeRender();
     });
 

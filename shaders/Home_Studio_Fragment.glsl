@@ -41,6 +41,13 @@ uniform float uCullThreshold;
 uniform float uCullEpsilon;
 uniform float uXrayEnabled; // 0.0 = off, 1.0 = on
 
+// R2-14 東西投射燈軌道（fixtureGroup=1）開關；關閉時 primary 與 secondary ray 皆跳過，自動無陰影
+uniform float uTrackLightEnabled; // 0.0 = off, 1.0 = on
+
+// R2-14 投射燈頭（4 盞傾斜圓柱；pivot 位於支架底，半徑 3cm、長 13.5cm；與 uTrackLightEnabled 共開關）
+uniform vec3 uTrackLampPos[4];
+uniform vec3 uTrackLampDir[4];
+
 int primaryRay = 1; // 僅 bounces==0 為 1，其餘為 0
 
 #define BACKDROP 5
@@ -51,6 +58,7 @@ int primaryRay = 1; // 僅 bounces==0 為 1，其餘為 0
 #define ACOUSTIC_PANEL 10
 #define OUTLET 11
 #define LAMP_SHELL 12
+#define TRACK 13
 
 // R2-6 旋轉物件逆矩陣
 uniform mat4 uLeftSpeakerInvMatrix;
@@ -250,6 +258,37 @@ float StadiumPillarIntersect(vec3 halfBox, vec3 ro, vec3 rd, out vec3 normal)
 	return t;
 }
 
+// 任意方向線段圓柱交叉（R2-14 投射燈頭；含端蓋）
+float CylinderSegmentIntersect(vec3 pa, vec3 pb, float r, vec3 ro, vec3 rd, out vec3 normal)
+{
+	vec3 ba = pb - pa;
+	vec3 oc = ro - pa;
+	float baba = dot(ba, ba);
+	float bard = dot(ba, rd);
+	float baoc = dot(ba, oc);
+	float k2 = baba - bard * bard;
+	float k1 = baba * dot(oc, rd) - baoc * bard;
+	float k0 = baba * dot(oc, oc) - baoc * baoc - r * r * baba;
+	float h = k1 * k1 - k2 * k0;
+	if (h < 0.0) return INFINITY;
+	h = sqrt(h);
+	float tSide = (-k1 - h) / k2;
+	float yS = baoc + tSide * bard;
+	if (tSide > 0.001 && yS > 0.0 && yS < baba)
+	{
+		normal = (oc + tSide * rd - ba * yS / baba) / r;
+		return tSide;
+	}
+	float yCap = (yS < 0.0) ? 0.0 : baba;
+	float tCap = (yCap - baoc) / bard;
+	if (tCap > 0.001 && abs(k1 + k2 * tCap) < h)
+	{
+		normal = ba * sign(yS) / sqrt(baba);
+		return tCap;
+	}
+	return INFINITY;
+}
+
 
 // BVH node: 2 pixels per node in tBVHTexture
 // pixel 2n:   [idPrimitive, min.x, min.y, min.z]  (idPrimitive >= 0 = leaf, -1 = inner)
@@ -266,11 +305,11 @@ void fetchBVHNode(int idx, out float idPrimitive, out vec3 minC, out float idRig
 
 // Box data: 4 pixels per box in tBoxDataTexture
 // pixel 4i:   [emission.rgb, type]
-// pixel 4i+1: [color.rgb, rotY]
-// pixel 4i+2: [min.xyz, reserved]
-// pixel 4i+3: [max.xyz, reserved]
+// pixel 4i+1: [color.rgb, meta]
+// pixel 4i+2: [min.xyz, cullable]
+// pixel 4i+3: [max.xyz, fixtureGroup]  R2-14：新增 fixtureGroup 於末位（原保留）
 
-void fetchBoxData(int idx, out vec3 emission, out int type, out vec3 color, out float meta, out vec3 bMin, out vec3 bMax, out float cullable) {
+void fetchBoxData(int idx, out vec3 emission, out int type, out vec3 color, out float meta, out vec3 bMin, out vec3 bMax, out float cullable, out float fixtureGroup) {
 	int base = idx * 4;
 	vec4 p0 = texelFetch(tBoxDataTexture, ivec2(base, 0), 0);
 	vec4 p1 = texelFetch(tBoxDataTexture, ivec2(base + 1, 0), 0);
@@ -283,6 +322,15 @@ void fetchBoxData(int idx, out vec3 emission, out int type, out vec3 color, out 
 	bMin     = p2.xyz;
 	bMax     = p3.xyz;
 	cullable = p2.w;
+	fixtureGroup = p3.w;
+}
+
+// R2-14：裝置開關 gating。關閉時 primary 與 secondary ray 皆跳過該 box，自動無陰影
+bool isFixtureDisabled(float fixtureGroup)
+{
+	if (fixtureGroup < 0.5) return false; // 基底幾何恆顯
+	if (fixtureGroup < 1.5 && uTrackLightEnabled < 0.5) return true; // R2-14
+	return false;
 }
 
 
@@ -359,11 +407,11 @@ float SceneIntersect( )
 			int boxIdx = int(idPrimitive);
 			vec3 boxEmission, boxColor, boxMin, boxMax;
 			int boxType;
-			float boxMeta, boxCullable;
-			fetchBoxData(boxIdx, boxEmission, boxType, boxColor, boxMeta, boxMin, boxMax, boxCullable);
+			float boxMeta, boxCullable, boxFixtureGroup;
+			fetchBoxData(boxIdx, boxEmission, boxType, boxColor, boxMeta, boxMin, boxMax, boxCullable, boxFixtureGroup);
 
-			// R2-13 X-ray 透視剝離：primary ray 時跳過顯式 cullable 的牆系附著物
-			if (!isBoxCulled(boxMin, boxMax, boxCullable))
+			// R2-14：裝置關閉時 primary/secondary ray 皆跳過（自動無陰影）；R2-13 X-ray 剝離沿用
+			if (!isFixtureDisabled(boxFixtureGroup) && !isBoxCulled(boxMin, boxMax, boxCullable))
 			{
 				d = BoxIntersect(boxMin, boxMax, rayOrigin, rayDirection, n, isRayExiting);
 				if (d < t && n != vec3(0,0,0))
@@ -492,6 +540,26 @@ float SceneIntersect( )
 			hitType = LAMP_SHELL;
 		}
 		hitObjectID = float(objectCount + 300);
+	}
+
+	// 6) R2-14 東西投射燈頭（4 盞傾斜圓柱；關閉時 primary/secondary ray 皆跳過 → 自動無陰影）
+	if (uTrackLightEnabled > 0.5)
+	{
+		for (int li = 0; li < 4; li++)
+		{
+			vec3 pa = uTrackLampPos[li];
+			vec3 pb = pa + uTrackLampDir[li] * 0.135;
+			d = CylinderSegmentIntersect(pa, pb, 0.03, rayOrigin, rayDirection, n);
+			if (d < t)
+			{
+				t = d;
+				hitNormal = n;
+				hitEmission = vec3(0);
+				hitColor = vec3(0.85, 0.85, 0.85);
+				hitType = DIFF;
+				hitObjectID = float(objectCount + 400 + li);
+			}
+		}
 	}
 
 	return t;
@@ -804,6 +872,27 @@ vec3 CalculateRadiance( out vec3 objectNormal, out vec3 objectColor, out float o
 
 			hitColor = pow(rawTexCol, vec3(2.2)) * 0.7;
 
+			diffuseCount++;
+			mask *= hitColor;
+			bounceIsSpecular = FALSE;
+			rayOrigin = x + nl * uEPS_intersect;
+			if (diffuseCount == 1)
+			{
+				diffuseBounceMask = mask;
+				diffuseBounceRayOrigin = rayOrigin;
+				diffuseBounceRayDirection = randomCosWeightedDirectionInHemisphere(nl);
+				willNeedDiffuseBounceRay = TRUE;
+			}
+			rayDirection = sampleQuadLight(x, nl, light, weight);
+			mask *= weight * 1.5;
+			sampleLight = TRUE;
+			continue;
+		}
+
+		if (hitType == TRACK)
+		{
+			// R2-14 真修：軌道純白漫射，無孔、無貼圖、吃降噪
+			// 邏輯等同 DIFF，獨立分支避免未來再與插座材質糾纏
 			diffuseCount++;
 			mask *= hitColor;
 			bounceIsSpecular = FALSE;
